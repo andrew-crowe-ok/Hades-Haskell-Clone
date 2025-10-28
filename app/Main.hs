@@ -6,7 +6,7 @@ import Types
 import Constants
 
 -- ---
--- 4. INITIAL STATES
+-- 1. INITIAL STATES
 -- ---
 
 
@@ -31,7 +31,7 @@ initalWorld = world
   }
 
 -- ---
--- 4. GAME LOOP FUNCTIONS
+-- 2. GAME LOOP FUNCTIONS
 -- ---
 
 drawWorld :: World -> Picture
@@ -99,7 +99,7 @@ updateWorld dt world =
 
 
 -- ---
--- 5. MAIN
+-- 3. MAIN
 -- ---
 
 
