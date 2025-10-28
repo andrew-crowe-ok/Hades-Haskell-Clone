@@ -5,61 +5,109 @@ import Brillo.Interface.Pure.Game
 import Types
 import Constants
 
+-- ---
+-- 4. INITIAL STATES
+-- ---
+
+
+initialPlayer :: Player
+initialPlayer = Player
+  { playerPos = (0, 0)
+  , playerVel = (0, 0)
+  }
+
+initialKeyState :: KeyState
+initialKeyState = KeyState
+  { keyW = False
+  , keyA = False
+  , keyS = False
+  , keyD = False
+  }
 
 initialWorld :: World
-initalWorld world =
+initalWorld = world
+  { player = initialPlayer
+  , keys = initialKeyState
+  }
 
+-- ---
+-- 4. GAME LOOP FUNCTIONS
+-- ---
 
 drawWorld :: World -> Picture
-drawWorld world =
-  case currentScene world of
-    SceneMenu menuState          ->  drawMenu menuState
-    SceneGame gameState          ->  drawGame gameState
-    SceneGameOver gameOverState  ->  drawGameOver gameOverState
+drawWorld world = Pictures
+  [ drawRoom
+  , drawPlayer (player world)
+  ]
 
 
-drawMenu :: MenuState -> Picture
-drawMenu state =
+drawRoom :: Picture
+drawRoom =
+  Color white $ rectangleWire roomWidth roomHeight
 
 
-drawGame :: GameState -> Picture
-drawGame state =
-
-
-drawGameOver :: GameOverState -> Picture
-drawGameOver state =
+drawPlayer :: Player -> Picture
+drawPlayer p =
+  Translate x y $ Color red $ circleSolid playerRadius
+  where
+    (x, y) = playerPos p
 
 
 handleEvent :: Event -> World -> World
 handleEvent event world =
-  case currentScene world of
-    
-    SceneMenu menuState ->
-      handleMenuInput even menuState world
-    
-    SceneGame gameState ->
-      handleGameInput event gameState world
+  case event of
 
-    SceneGameOver gameOverState -> 
-      handleGameOverInput event gameOverState world
+    -- Key Down events
+    (EventKey (Char 'w') Down _ _) -> world { keys = (keys world) { keyW = True } }
+    (EventKey (Char 'a') Down _ _) -> world { keys = (keys world) { keyA = True } }
+    (EventKey (Char 's') Down _ _) -> world { keys = (keys world) { keyS = True } }
+    (EventKey (Char 'd') Down _ _) -> world { keys = (keys world) { keyD = True } }
+
+    -- Key Up events
+    (EventKey (Char 'w') Up _ _) -> world { keys = (keys world) { keyW = False } }
+    (EventKey (Char 'a') Up _ _) -> world { keys = (keys world) { keyA = False } }
+    (EventKey (Char 's') Up _ _) -> world { keys = (keys world) { keyS = False } }
+    (EventKey (Char 'd') Up _ _) -> world { keys = (keys world) { keyD = False } }
+
+    -- Ignore all other events
+    _ -> world
 
 
 updateWorld :: Float -> World -> World
-updateWorld secondsPassed world =
-  case currentScene world of
-    SceneMenu     _  ->  world
-    SceneGameOver _  ->  world
+updateWorld dt world =
+  world { player = newPlayer }
+  where
+    oldPlayer = player world
+    ks = keys world
+    (oldX, oldY) = playerPos oldPlayer
 
-    SceneGame gameState ->
-      let newGameState = updateGame secondsPassed gameState
-      in world
-        currentScene = SceneGame newGameState
+    vx = (if keyD ks then playerSpeed else 0) + (if keyA ks then -playerSpeed else 0)
+    vy = (if keyW ks then playerSpeed else 0) + (if keyS ks then -playerSpeed else 0)
+    newVel = (vx, vy)
+
+    newX = oldX + vx * dt
+    newY = oldY + vy * dt
+
+    halfRoomW = roomWidth / 2 - playerRadius
+    halfRoomH = roomHeight / 2 - playerRadius
+
+    clampedX = max (-halfRoomW) (min halfRoomW newX)
+    clampedY = max (-halfRoomH) (min halfRoomH newY)
+    clampedPos = (clampedX, clampedY)
+
+    newPlayer = oldPlayer { playerPos, playerVel = newVel }
+
+
+-- ---
+-- 5. MAIN
+-- ---
+
 
 main :: IO ()
 main =
   play
-    (InWindow "Moving Object" (windowWidth, windowHeight) (10, 10)) -- Window
-    white                                 -- Background color
+    (InWindow "Hades Clone Demo" (windowWidth, windowHeight) (10, 10)) -- Window
+    black                                 -- Background color
     60                                    -- Simulation steps per second
     initialWorld                          -- Initial world state
     drawWorld                             -- Function to draw the world
