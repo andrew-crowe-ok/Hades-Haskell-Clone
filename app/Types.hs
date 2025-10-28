@@ -2,6 +2,7 @@ module Types where
 
 import System.Random (StdGen)
 
+
 data GameState
   = MainMenu
   | Running
@@ -20,7 +21,7 @@ data World = World
   , metaProgress :: MetaProgress
   , rng          :: StdGen
   , keys         :: KeyState
-  }
+  } deriving (Show)
 
 
 data Player = Player
@@ -40,7 +41,7 @@ data KeyState = KeyState
     , keyA :: Bool
     , keyS :: Bool
     , keyD :: Bool
-    }
+    } deriving (Show, Read)
 
 
 data RunState = RunState
@@ -83,7 +84,7 @@ data EnemyType
 
 data AiState
     = Idle
-    | Chasing Player
+    | Chasing
     | Attacking
     deriving (Show, Read)
 
@@ -95,11 +96,11 @@ data Projectile = Projectile
     , projSource :: ProjectileSource
     , projRadius :: Float
     , projTTL    :: Float -- Time to Live (seconds)
-    } deriving (Show, Read)
+    } deriving (Show, Read, Eq)
 
 
 data ProjectileSource = FromPlayer | FromEnemy
-    deriving (Show, Read)
+    deriving (Show, Read, Eq)
 
 
 data Weapon = Weapon
