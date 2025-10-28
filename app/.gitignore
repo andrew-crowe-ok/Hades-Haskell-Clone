@@ -1,0 +1,11 @@
+dist-newstyle/
+dist/
+cabals-dev/
+cabal.project.local
+cabal.project.freeze
+.stack-work/
+.vscode/
+.hls/
+.ghc.environment.*
+.DS_Store
+Thumbs.db
