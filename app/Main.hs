@@ -126,7 +126,7 @@ drawPlayer p =
 
 -- | Draw all enemies
 drawEnemies :: [Enemy] -> Picture
-drawEnemie
+drawEnemies es = pictures $ map drawEnemy es
 
 
 drawEnemy :: Enemy -> Picture
