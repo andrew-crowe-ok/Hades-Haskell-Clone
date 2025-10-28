@@ -1,7 +1,7 @@
 module Main where
 
 import Brillo
-import Brillo.Interface.Pure.Game
+import Brillo.Interface.Pure.Game hiding (KeyState)
 import Types
 import Constants
 
@@ -25,7 +25,7 @@ initialKeyState = KeyState
   }
 
 initialWorld :: World
-initalWorld = world
+initialWorld = World
   { player = initialPlayer
   , keys = initialKeyState
   }
@@ -95,7 +95,7 @@ updateWorld dt world =
     clampedY = max (-halfRoomH) (min halfRoomH newY)
     clampedPos = (clampedX, clampedY)
 
-    newPlayer = oldPlayer { playerPos, playerVel = newVel }
+    newPlayer = oldPlayer { playerPos = clampedPos, playerVel = newVel }
 
 
 -- ---

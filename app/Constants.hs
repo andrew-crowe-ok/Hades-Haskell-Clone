@@ -1,3 +1,5 @@
+module Constants where
+
 windowWidth :: Int
 windowWidth = 800
 

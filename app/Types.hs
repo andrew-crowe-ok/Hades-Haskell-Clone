@@ -1,3 +1,5 @@
+module Types where
+
 import System.Random (StdGen)
 
 data GameState
@@ -10,14 +12,15 @@ data GameState
   deriving (Show, Read, Eq)  
 
 
-data World = world
+data World = World
   { currentScene :: Scene
   , gameState    :: GameState
   , player       :: Player
   , currentRun   :: RunState
   , metaProgress :: MetaProgress
   , rng          :: StdGen
-  } deriving (Show, Read)
+  , keys         :: KeyState
+  }
 
 
 data Player = Player
@@ -145,3 +148,4 @@ data Scene
     = SceneMenu MenuState 
     | SceneGame GameState 
     | SceneGameOver GameOverState
+    deriving (Show, Read)
