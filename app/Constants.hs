@@ -1,6 +1,6 @@
 module Constants where
 
-import Brillo
+import Graphics.Gloss
 
 windowWidth :: Int
 windowWidth = 800
