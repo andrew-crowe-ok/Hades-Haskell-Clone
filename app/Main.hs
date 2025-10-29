@@ -1,12 +1,11 @@
 module Main where
 
-import Brillo
-import Brillo.Interface.Pure.Game hiding (KeyState)
-import Types
-import Constants
-
+import Graphics.Gloss
+import Graphics.Gloss.Interface.Pure.Game hiding (KeyState)
 import System.Random ( StdGen, getStdGen, randomR )
 
+import Types
+import Constants
 
 -- | Main entry point.
 -- We now get a random generator from IO and pass it to initialWorld.
