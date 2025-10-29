@@ -11,9 +11,11 @@ common warnings
 executable Hades-Haskell-Clone
     import:           warnings
     main-is:          Main.hs
+    other-modules:    Types, 
+                      Constants
 
-    build-depends:    base ^>=4.18.3.0,
-                      brillo,
+    build-depends:    base ^>= 4.18.3.0,
+                      gloss,
                       random
 
     hs-source-dirs:   app
