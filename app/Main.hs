@@ -1,8 +1,10 @@
+{-# OPTIONS_GHC -Wno-missing-fields #-}
 module Main where
 
 import Graphics.Gloss
 import Graphics.Gloss.Interface.Pure.Game hiding (KeyState)
-import System.Random ( StdGen, getStdGen, randomR )
+import System.Random ( StdGen, getStdGen )
+import Data.List
 
 import Types
 import Constants
@@ -95,7 +97,11 @@ draw :: World -> Picture
 draw world =
   case gameState world of
     Running -> drawGame world
-    -- We'll add other states (Paused, GameOver) later
+    Paused  -> pictures
+        [ drawGame world
+        , translate (-100) 0 $ scale 0.3 0.3 $ color white $ text "PAUSED"
+        ]
+    -- TODO: add a game over state
     _       -> drawGame world -- Default to drawing the game
 
 
@@ -153,7 +159,7 @@ drawUI :: World -> Picture
 drawUI world =
   let p = player world
       healthText = "Health: " ++ show (playerHealth p)
-  in translate (-380) (280) $ scale 0.15 0.15 $ color white $ text healthText
+  in translate (-380) 280 $ scale 0.15 0.15 $ color white $ text healthText
 
 
 -- --- INPUT HANDLING ---
@@ -163,7 +169,13 @@ handleInput :: Event -> World -> World
 handleInput event world =
   case gameState world of
     Running -> handleRunningInput event world
+    Paused  -> handlePausedInput event world
     _       -> world -- No input in other states for now
+
+
+handlePausedInput :: Event -> World -> World
+handlePausedInput (EventKey (SpecialKey KeyEnter) Down _ _) world = world { gameState = Running }
+handlePausedInput _ world = world
 
 
 -- | Input handling for the 'Running' state.
@@ -181,10 +193,13 @@ handleRunningInput event world =
     EventKey (Char 'a') Up   _ _ -> setPlayerVel (playerSpeed, 0)
     EventKey (Char 'd') Down _ _ -> setPlayerVel (playerSpeed, 0)
     EventKey (Char 'd') Up   _ _ -> setPlayerVel (-playerSpeed, 0)
-    
+
     -- Attack key
     EventKey (Char 'f') Down _ _ -> spawnProjectile world
-    
+
+    -- Pause
+    EventKey (SpecialKey KeyEnter) Down _ _ -> world { gameState = Paused }
+
     -- Default case
     _                            -> world
 
@@ -216,7 +231,7 @@ spawnProjectile world =
         , projRadius = projectileRadius
         , projTTL    = projectileTTL
         }
-      
+
       -- Add the new projectile to the chamber
       newChamber = chamber { projectiles = newProj : projectiles chamber }
       newRun     = run { currentChamber = newChamber }
@@ -231,6 +246,7 @@ update :: Float -> World -> World
 update dt world =
   case gameState world of
     Running -> updateGame dt world
+    Paused  -> world
     _       -> world -- No updates in other states
 
 
@@ -238,11 +254,106 @@ update dt world =
 updateGame :: Float -> World -> World
 updateGame dt world =
   let world1 = movePlayer dt world
-      world2 = updateAI dt world1
-      world3 = moveEntities dt world2
-      world4 = handleCollisions world3
-      world5 = updateProjectiles dt world4
-  in world5
+      world2 = resolvePlayerEnemyCollisions world1
+      world3 = updateAI dt world2
+      world4 = moveEntities dt world3
+      world5 = handleCollisions world4
+      world6 = updateProjectiles dt world5
+  in world6
+
+
+-- This function now takes the whole world and returns a new one
+resolvePlayerEnemyCollisions :: World -> World
+resolvePlayerEnemyCollisions world =
+  let p = player world
+      chamber = currentChamber (currentRun world)
+      allEnemies = enemies chamber
+
+      -- The accumulator is (updated Player, list of resolved enemies)
+      -- We fold over all enemies, starting with the original player and an empty list
+      (finalPlayer, resolvedEnemies) = foldl' resolveOne (p, []) allEnemies
+
+      newChamber = chamber { enemies = resolvedEnemies }
+  in world { player = finalPlayer, currentRun = (currentRun world) { currentChamber = newChamber } }
+
+
+-- This is the new helper function for the fold
+-- It takes the accumulator (Player, [Enemy]) and one Enemy
+-- It returns the new accumulator
+resolveOne :: (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
+resolveOne (p, resolvedList) enemy =
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos enemy
+      pRad     = playerRadius
+      eRad     = enemyRadius enemy -- Use the specific enemy's radius
+
+      vecX = px - ex
+      vecY = py - ey
+      dist = magnitude (vecX, vecY) + 0.0001 -- Add epsilon to avoid div by zero
+      overlap = (pRad + eRad) - dist
+
+  in if overlap > 0
+     -- Overlap! Push both player and enemy by half the overlap
+     then
+       let dirX = vecX / dist -- Normalized push direction
+           dirY = vecY / dist
+           pushAmount = overlap / 2
+
+           -- Push the player
+           newPx = px + dirX * pushAmount
+           newPy = py + dirY * pushAmount
+           newPlayer = p { playerPos = (newPx, newPy) }
+
+           -- Push the enemy (in the opposite direction)
+           newEx = ex - dirX * pushAmount
+           newEy = ey - dirY * pushAmount
+           newEnemy = enemy { enemyPos = (newEx, newEy) }
+
+       in (newPlayer, newEnemy : resolvedList) -- Return new player and add new enemy to list
+
+     -- No overlap, return the player unchanged and add the original enemy to the list
+     else (p, enemy : resolvedList)
+
+
+-- This function is defined inside `resolvePlayerEnemyCollisions` (in its `where` clause)
+-- or at the top level, passing in playerRadius.
+checkAndPush :: (Float, Float) -> Enemy -> (Float, Float)
+checkAndPush currentPPos enemy =
+  let (px, py) = currentPPos
+      (ex, ey) = enemyPos enemy
+      eRad     = enemyRadius enemy -- Make sure to use the enemy's radius
+      pRad     = playerRadius      -- This constant must be available
+
+      -- 1. Calculate vector from enemy to player
+      vecX = px - ex
+      vecY = py - ey
+
+      -- 2. Calculate distance
+      -- You'll need a magnitude helper: magnitude (x, y) = sqrt (x*x + y*y)
+      -- Add a small value to avoid division by zero if dist is 0
+      dist = magnitude (vecX, vecY) + 0.0001
+
+      -- 3. Calculate overlap
+      overlap = (pRad + eRad) - dist
+
+  in if overlap > 0
+     -- 4. They are overlapping! Push the player.
+     then
+       -- 4a. Find the push direction (normalize the vector)
+       let dirX = vecX / dist
+           dirY = vecY / dist
+
+       -- 4b. Calculate new position by pushing by 'overlap' amount
+           newX = px + dirX * overlap
+           newY = py + dirY * overlap
+       in (newX, newY)
+
+     -- 5. No overlap, return position unchanged for the next check
+     else currentPPos
+
+
+magnitude :: (Float, Float) -> Float
+magnitude (x, y) = sqrt (x*x + y*y)
 
 
 -- | Update player position based on velocity.
@@ -262,6 +373,8 @@ movePlayer dt world =
       clampedX = max (-halfRoomW) (min halfRoomW newX)
       clampedY = max (-halfRoomH) (min halfRoomH newY)
 
+
+
       newPlayer = p { playerPos = (clampedX, clampedY) }
   in world { player = newPlayer }
 
@@ -272,7 +385,7 @@ updateAI dt world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      
+
       -- Update AI state for each enemy
       newEnemies = map (updateEnemyAI p) (enemies chamber)
 
@@ -312,19 +425,19 @@ moveEnemy dt p e =
     Chasing ->
       let (px, py) = playerPos p
           (ex, ey) = enemyPos e
-          
+
           -- Vector from enemy to player
           vecToPlayer = (px - ex, py - ey)
           -- Normalized direction vector
           (dirX, dirY) = normalize vecToPlayer
-          
+
           -- Enemy speed (hardcoded for now)
           speed = 100
-          
+
           newX = ex + dirX * speed * dt
           newY = ey + dirY * speed * dt
       in e { enemyPos = (newX, newY) }
-    
+
     _ -> e -- Don't move if Idle or Attacking
 
 
@@ -345,10 +458,10 @@ updateProjectiles dt world =
   let run = currentRun world
       chamber = currentChamber run
       allProjs = projectiles chamber
-      
+
       -- Keep projectiles that still have Time To Live
       liveProjs = filter (\p -> projTTL p > 0) allProjs
-      
+
       newChamber = chamber { projectiles = liveProjs }
       newRun     = run { currentChamber = newChamber }
   in world { currentRun = newRun }
@@ -360,7 +473,7 @@ handleCollisions world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      
+
       -- Separate player and enemy projectiles
       (playerProjs, enemyProjs) = partitionProjs (projectiles chamber)
       allEnemies = enemies chamber
@@ -368,12 +481,12 @@ handleCollisions world =
       -- 1. Check player projectiles against enemies
       -- For each enemy, find projectiles that hit it
       (survivingEnemies, hitProjs) = checkHits allEnemies playerProjs
-      
+
       -- 2. Check enemy projectiles against player (TODO)
       -- For now, just apply damage to player
-      
+
       -- 3. Check enemies against player (TODO)
-      
+
       -- Filter out projectiles that hit something
       survivingProjs = filter (`notElem` hitProjs) playerProjs ++ enemyProjs
 
@@ -381,15 +494,14 @@ handleCollisions world =
       newChamber = chamber { enemies = survivingEnemies, projectiles = survivingProjs }
       newRun     = run { currentChamber = newChamber }
       -- We'd also update player health here if they were hit
-      
+
   in world { currentRun = newRun }
 
 
 -- | Checks all enemies against all player projectiles.
 -- Returns (surviving enemies, projectiles that hit)
 checkHits :: [Enemy] -> [Projectile] -> ([Enemy], [Projectile])
-checkHits allEnemies playerProjs =
-  foldr (applyProjectileToEnemies) (allEnemies, []) playerProjs
+checkHits allEnemies = foldr applyProjectileToEnemies (allEnemies, [])
 
 
 -- | Helper for checkHits. Applies one projectile to a list of enemies.
@@ -404,16 +516,14 @@ applyProjectileToEnemies proj (enemies, hitProjs) =
 -- | Helper for applyProjectileToEnemies. Checks one projectile against one enemy.
 -- Returns (list of enemies to keep, bool if hit occurred)
 checkHit :: Projectile -> Enemy -> ([Enemy], Bool) -> ([Enemy], Bool)
-checkHit proj enemy (survivors, alreadyHit) =
-  if alreadyHit -- If this projectile already hit an enemy, just pass this enemy through
-  then (enemy : survivors, True)
-  else if isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
-       then -- Hit! Apply damage.
-         let newHealth = enemyHealth enemy - projDamage proj
-         in if newHealth > 0
-            then (enemy { enemyHealth = newHealth } : survivors, True) -- Enemy survives
-            else (survivors, True) -- Enemy dies, don't add to list
-       else (enemy : survivors, False) -- No hit
+checkHit proj enemy (survivors, alreadyHit)
+    | alreadyHit    = (enemy : survivors, True) -- Projectile already hit; pass enemy through
+    | not collision = (enemy : survivors, False) -- No collision
+    | newHealth > 0 = (enemy { enemyHealth = newHealth } : survivors, True) -- Hit! Enemy survives
+    | otherwise     = (survivors, True) -- Hit! Enemy dies
+  where
+    collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
+    newHealth = enemyHealth enemy - projDamage proj
 
 
 -- | Simple circle collision check.
@@ -429,11 +539,6 @@ isColliding (x1, y1) r1 (x2, y2) r2 =
 -- | Partitions projectiles into player-sourced and enemy-sourced.
 partitionProjs :: [Projectile] -> ([Projectile], [Projectile])
 partitionProjs = partition (\p -> projSource p == FromPlayer)
-
-
--- | Helper to 'partition' a list.
-partition :: (a -> Bool) -> [a] -> ([a], [a])
-partition p xs = (filter p xs, filter (not . p) xs)
 
 
 -- --- VECTOR MATH ---
