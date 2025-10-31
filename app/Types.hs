@@ -31,8 +31,11 @@ data Player = Player
   , maxHealth     :: Int
   , currentWeapon :: Weapon
   , currentBoons  :: [Boon]
-  --, dashCharges   :: Int
-  --, lastDashTime  :: Float
+  , facingDir :: (Float, Float)   -- Where Player is facing
+  , dashCount   :: Int             
+  , dashCooldown  :: Float
+  , dashTimer :: Float
+  , isDashing      :: Bool
   } deriving (Show, Read)
 
 

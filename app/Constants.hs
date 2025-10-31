@@ -40,3 +40,6 @@ projectileSpeed = 400
 
 projectileTTL :: Float -- Time to Live
 projectileTTL = 2.0 -- seconds
+
+dashSpeed :: Float
+dashSpeed = 400  -- faster than normal playerSpeed

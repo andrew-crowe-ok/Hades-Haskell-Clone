@@ -44,6 +44,11 @@ initialPlayer = Player
   , maxHealth     = 100
   , currentWeapon = Weapon Sword 10 2.0 0.0 -- Sword, 10 dmg, 2 atks/sec
   , currentBoons  = []
+  , dashCount      = 2
+  , dashCooldown   = 0
+  , dashTimer      = 0
+  , isDashing      = False
+  , facingDir = (1, 0)  -- Initially facing right
   }
 
 
@@ -166,57 +171,108 @@ handleInput event world =
     _       -> world -- No input in other states for now
 
 
--- | Input handling for the 'Running' state.
+
 handleRunningInput :: Event -> World -> World
 handleRunningInput event world =
-  let p = player world
-      vel = playerVel p
-  in case event of
-    -- Movement keys update velocity
-    EventKey (Char 'w') Down _ _ -> setPlayerVel (0, playerSpeed)
-    EventKey (Char 'w') Up   _ _ -> setPlayerVel (0, -playerSpeed)
-    EventKey (Char 's') Down _ _ -> setPlayerVel (0, -playerSpeed)
-    EventKey (Char 's') Up   _ _ -> setPlayerVel (0, playerSpeed)
-    EventKey (Char 'a') Down _ _ -> setPlayerVel (-playerSpeed, 0)
-    EventKey (Char 'a') Up   _ _ -> setPlayerVel (playerSpeed, 0)
-    EventKey (Char 'd') Down _ _ -> setPlayerVel (playerSpeed, 0)
-    EventKey (Char 'd') Up   _ _ -> setPlayerVel (-playerSpeed, 0)
-    
-    -- Attack key
-    EventKey (Char 'f') Down _ _ -> spawnProjectile world
-    
-    -- Default case
-    _                            -> world
+  case event of
+    -- KEY DOWN
+    EventKey (Char 'w') Down _ _ -> updateKeyState (\ks -> ks { keyW = True }) world
+    EventKey (Char 'a') Down _ _ -> updateKeyState (\ks -> ks { keyA = True }) world
+    EventKey (Char 's') Down _ _ -> updateKeyState (\ks -> ks { keyS = True }) world
+    EventKey (Char 'd') Down _ _ -> updateKeyState (\ks -> ks { keyD = True }) world
 
+    -- KEY UP
+    EventKey (Char 'w') Up _ _ -> updateKeyState (\ks -> ks { keyW = False }) world
+    EventKey (Char 'a') Up _ _ -> updateKeyState (\ks -> ks { keyA = False }) world
+    EventKey (Char 's') Up _ _ -> updateKeyState (\ks -> ks { keyS = False }) world
+    EventKey (Char 'd') Up _ _ -> updateKeyState (\ks -> ks { keyD = False }) world
+
+    -- SHOOT
+    EventKey (Char 'f') Down _ _ -> spawnProjectile world
+
+    -- DASH
+    EventKey (SpecialKey KeySpace) Down _ _ -> tryDash world
+
+    _ -> world
   where
-    -- Helper to update player velocity in the nested world state
-    setPlayerVel (vx, vy) =
-      let p = player world
-          (oldVx, oldVy) = playerVel p
-          newVel = (oldVx + vx, oldVy + vy)
-      in world { player = p { playerVel = newVel } }
+    -- Helper to update KeyState and then recalc movement
+    updateKeyState f w =
+      let newKeys = f (keys w)
+      in updateMovementFromKeys w { keys = newKeys }
+
+-- | Recomputes velocity and facing based on keys, unless dashing.
+updateMovementFromKeys :: World -> World
+updateMovementFromKeys world =
+  let p = player world
+  in if isDashing p
+     then world  -- Ignore movement keys while dashing
+     else
+       let ks = keys world
+           up    = if keyW ks then 1 else 0
+           down  = if keyS ks then -1 else 0
+           right = if keyD ks then 1 else 0
+           left  = if keyA ks then -1 else 0
+
+           -- Combined direction
+           dx = fromIntegral (right + left)
+           dy = fromIntegral (up + down)
+
+           -- Normalize for diagonal movement
+           (nx, ny) = normalize (dx, dy)
+
+           newVel = (nx * playerSpeed, ny * playerSpeed)
+           newFacing = if (dx, dy) == (0,0) then facingDir p else (nx, ny)
+           newPlayer = p { playerVel = newVel, facingDir = newFacing }
+       in world { player = newPlayer }
+
+
+  --Dashing element
+tryDash :: World -> World
+tryDash world =
+  let p = player world
+  in if dashCount p > 0 && not (isDashing p)
+        then world { player = p
+            { isDashing    = True
+            , dashTimer    = 0.2      -- dash lasts 0.2 s
+            , dashCount    = dashCount p - 1
+            , dashCooldown = if dashCount p == 1 then 1 else dashCooldown p
+            }
+        }
+        else world
+
+
+
+
+
+--  WORKS WITH WASD
 
 
 -- | Creates a projectile originating from the player.
 spawnProjectile :: World -> World
 spawnProjectile world =
-  let p = player world
-      run = currentRun world
+  let p       = player world
+      run     = currentRun world
       chamber = currentChamber run
       (px, py) = playerPos p
+      (fx, fy) = facingDir p   -- Get the player's facing direction
 
-      -- Simple projectile: always fires right
-      (vx, vy) = (projectileSpeed, 0)
+      -- Normalize facing direction so diagonal shots don't go faster
+      len = sqrt (fx*fx + fy*fy)
+      (nx, ny) = if len == 0 then (0,0) else (fx / len, fy / len)
 
+      -- Compute projectile velocity
+      (vx, vy) = (nx * projectileSpeed, ny * projectileSpeed)
+
+      -- Create the projectile just outside the player
       newProj = Projectile
-        { projPos    = (px + playerRadius, py) -- Spawn just outside player
+        { projPos    = (px + nx * playerRadius, py + ny * playerRadius)
         , projVel    = (vx, vy)
         , projDamage = damage (currentWeapon p)
         , projSource = FromPlayer
         , projRadius = projectileRadius
         , projTTL    = projectileTTL
         }
-      
+
       -- Add the new projectile to the chamber
       newChamber = chamber { projectiles = newProj : projectiles chamber }
       newRun     = run { currentChamber = newChamber }
@@ -234,25 +290,50 @@ update dt world =
     _       -> world -- No updates in other states
 
 
--- | Main game logic update.
+-- | Main game logic update
 updateGame :: Float -> World -> World
 updateGame dt world =
-  let world1 = movePlayer dt world
-      world2 = updateAI dt world1
-      world3 = moveEntities dt world2
-      world4 = handleCollisions world3
-      world5 = updateProjectiles dt world4
-  in world5
+  let world1 = world { player = updatePlayerTimers dt (player world) }
+      world2 = movePlayer dt world1
+      world3 = updateAI dt world2
+      world4 = moveEntities dt world3
+      world5 = handleCollisions world4
+      world6 = updateProjectiles dt world5
+  in world6
 
 
--- | Update player position based on velocity.
+-- | Update player timers (dash, cooldown) every frame
+updatePlayerTimers :: Float -> Player -> Player
+updatePlayerTimers dt p =
+  let p1 = if dashTimer p > 0
+           then let t = dashTimer p - dt
+                in p { dashTimer = max 0 t
+                     , isDashing = t > 0
+                     }
+           else p
+      p2 = if dashCooldown p1 > 0
+           then let c = dashCooldown p1 - dt
+                    newCount = if c <= 0 then 3 else dashCount p1
+                in p1 { dashCooldown = max 0 c
+                      , dashCount = newCount
+                      }
+           else p1
+  in p2
+
+
+-- | Update player position based on velocity or dash
 movePlayer :: Float -> World -> World
 movePlayer dt world =
   let p = player world
       (px, py) = playerPos p
-      (vx, vy) = playerVel p
 
-      -- New position
+      -- Use dash velocity if dashing, otherwise normal velocity
+      (vx, vy) = if isDashing p
+                 then let (fx, fy) = facingDir p
+                      in (fx * dashSpeed, fy * dashSpeed)
+                 else playerVel p
+
+      -- Compute new position
       newX = px + vx * dt
       newY = py + vy * dt
 
