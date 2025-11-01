@@ -370,24 +370,30 @@ updateGame dt world =
       -- 4. Check for and execute dashes (with cooldown)
       world3 = handleDashing dt world2 pStats
 
-      -- 5. Move player (applying dash velocity if dashing)
-      world4 = movePlayer dt world3
+      -- 5. Check for player interaction (collecting rewards)
+      world4 = handleInteraction world3
 
-      -- 6. Resolve physics collisions
-      world5 = resolvePlayerEnemyCollisions world4
+      -- 6. Move player (applying dash velocity if dashing)
+      world5 = movePlayer dt world4
 
-      -- 7. Update AI and move non-player entities
-      world6 = updateAI dt world5
-      world7 = moveEntities dt world6
+      -- 7. Resolve physics collisions
+      world6 = resolvePlayerEnemyCollisions world5
 
-      -- 8. Handle projectile hits and damage
-      world8 = handleCollisions world7 pStats
+      -- 8. Update AI and move non-player entities
+      world7 = updateAI dt world6
+      world8 = moveEntities dt world7
 
-      -- 9. Cleanup projectiles
-      world9 = updateProjectiles dt world8
+      -- 9. Handle projectile hits and damage
+      world9 = handleCollisions world8 pStats
 
-      -- 10. Check for player death
-      finalWorld = checkPlayerDeath world9
+      -- 10. Check if room is cleared (and spawn reward)
+      world10 = checkRoomCleared world9
+
+      -- 11. Cleanup projectiles
+      world11 = updateProjectiles dt world10
+
+      -- 12. Check for player death
+      finalWorld = checkPlayerDeath world11
 
   in finalWorld
 
@@ -745,7 +751,7 @@ checkRoomCleared world =
 -- Generates a reward. For now, always the AttackSpeed boon.
 generateReward :: StdGen -> (Reward, StdGen)
 generateReward gen =
-  let boon = AttackSpeed 1.2 -- 20% attack speed increase
+  let boon = AttackSpeed 2 -- 2X attack speed increase
       pos = (0, 100) -- Spawn near the center-top
   in (SimpleBoon boon pos, gen) -- We pass 'gen' back, though it's unused here
 
