@@ -2,7 +2,8 @@ module Main where
 
 import Graphics.Gloss
 import Graphics.Gloss.Interface.Pure.Game hiding (KeyState)
-import System.Random ( StdGen, getStdGen, randomR )
+import System.Random ( StdGen, getStdGen )
+import Data.List
 
 import Types
 import Constants
@@ -50,6 +51,7 @@ initialPlayer = Player
   , isDashing      = False
   , facingDir = (1, 0)  -- Initially facing right
   }
+
 
 
 initialKeyState :: KeyState
@@ -100,7 +102,11 @@ draw :: World -> Picture
 draw world =
   case gameState world of
     Running -> drawGame world
-    -- We'll add other states (Paused, GameOver) later
+    Paused  -> pictures
+        [ drawGame world
+        , translate (-100) 0 $ scale 0.3 0.3 $ color white $ text "PAUSED"
+        ]
+    -- TODO: add a game over state
     _       -> drawGame world -- Default to drawing the game
 
 
@@ -158,7 +164,7 @@ drawUI :: World -> Picture
 drawUI world =
   let p = player world
       healthText = "Health: " ++ show (playerHealth p)
-  in translate (-380) (280) $ scale 0.15 0.15 $ color white $ text healthText
+  in translate (-380) 280 $ scale 0.15 0.15 $ color white $ text healthText
 
 
 -- --- INPUT HANDLING ---
@@ -168,104 +174,92 @@ handleInput :: Event -> World -> World
 handleInput event world =
   case gameState world of
     Running -> handleRunningInput event world
+    Paused  -> handlePausedInput event world
     _       -> world -- No input in other states for now
 
 
+handlePausedInput :: Event -> World -> World
+handlePausedInput (EventKey (SpecialKey KeyEnter) Down _ _) world = world { gameState = Running }
+handlePausedInput _ world = world
 
+     
+
+
+-- | Input handling for the 'Running' state.
 handleRunningInput :: Event -> World -> World
 handleRunningInput event world =
   case event of
-    -- KEY DOWN
-    EventKey (Char 'w') Down _ _ -> updateKeyState (\ks -> ks { keyW = True }) world
-    EventKey (Char 'a') Down _ _ -> updateKeyState (\ks -> ks { keyA = True }) world
-    EventKey (Char 's') Down _ _ -> updateKeyState (\ks -> ks { keyS = True }) world
-    EventKey (Char 'd') Down _ _ -> updateKeyState (\ks -> ks { keyD = True }) world
+    -- Key presses
+    EventKey (Char 'w') Down _ _ -> updateKey (\ks -> ks { keyW = True }) world
+    EventKey (Char 'a') Down _ _ -> updateKey (\ks -> ks { keyA = True }) world
+    EventKey (Char 's') Down _ _ -> updateKey (\ks -> ks { keyS = True }) world
+    EventKey (Char 'd') Down _ _ -> updateKey (\ks -> ks { keyD = True }) world
 
-    -- KEY UP
-    EventKey (Char 'w') Up _ _ -> updateKeyState (\ks -> ks { keyW = False }) world
-    EventKey (Char 'a') Up _ _ -> updateKeyState (\ks -> ks { keyA = False }) world
-    EventKey (Char 's') Up _ _ -> updateKeyState (\ks -> ks { keyS = False }) world
-    EventKey (Char 'd') Up _ _ -> updateKeyState (\ks -> ks { keyD = False }) world
+    -- Key releases
+    EventKey (Char 'w') Up _ _ -> updateKey (\ks -> ks { keyW = False }) world
+    EventKey (Char 'a') Up _ _ -> updateKey (\ks -> ks { keyA = False }) world
+    EventKey (Char 's') Up _ _ -> updateKey (\ks -> ks { keyS = False }) world
+    EventKey (Char 'd') Up _ _ -> updateKey (\ks -> ks { keyD = False }) world
 
-    -- SHOOT
+    -- Attack key
     EventKey (Char 'f') Down _ _ -> spawnProjectile world
 
-    -- DASH
+    -- Dash key (example: Left Shift)
     EventKey (SpecialKey KeySpace) Down _ _ -> tryDash world
 
+    -- Pause
+    EventKey (SpecialKey KeyEnter) Down _ _ -> world { gameState = Paused }
+
+    -- Default
     _ -> world
   where
-    -- Helper to update KeyState and then recalc movement
-    updateKeyState f w =
-      let newKeys = f (keys w)
-      in updateMovementFromKeys w { keys = newKeys }
+    -- Update keys and compute velocity/facing
+    updateKey :: (KeyState -> KeyState) -> World -> World
+    updateKey f world =
+      let newKS = f (keys world)
+          (vx, vy) = computeVel newKS
+          newFacing = if vx /= 0 || vy /= 0 then normalize (vx, vy) else facingDir (player world)
+          newPlayer = (player world) { playerVel = (vx, vy), facingDir = newFacing }
+      in world { keys = newKS, player = newPlayer }
 
--- | Recomputes velocity and facing based on keys, unless dashing.
-updateMovementFromKeys :: World -> World
-updateMovementFromKeys world =
-  let p = player world
-  in if isDashing p
-     then world  -- Ignore movement keys while dashing
-     else
-       let ks = keys world
-           up    = if keyW ks then 1 else 0
-           down  = if keyS ks then -1 else 0
-           right = if keyD ks then 1 else 0
-           left  = if keyA ks then -1 else 0
-
-           -- Combined direction
-           dx = fromIntegral (right + left)
-           dy = fromIntegral (up + down)
-
-           -- Normalize for diagonal movement
-           (nx, ny) = normalize (dx, dy)
-
-           newVel = (nx * playerSpeed, ny * playerSpeed)
-           newFacing = if (dx, dy) == (0,0) then facingDir p else (nx, ny)
-           newPlayer = p { playerVel = newVel, facingDir = newFacing }
-       in world { player = newPlayer }
-
-
-  --Dashing element
-tryDash :: World -> World
-tryDash world =
-  let p = player world
-  in if dashCount p > 0 && not (isDashing p)
-        then world { player = p
-            { isDashing    = True
-            , dashTimer    = 0.2      -- dash lasts 0.2 s
-            , dashCount    = dashCount p - 1
-            , dashCooldown = if dashCount p == 1 then 1 else dashCooldown p
-            }
-        }
-        else world
+    -- Compute velocity from currently held keys
+    computeVel :: KeyState -> (Float, Float)
+    computeVel ks =
+      let x = (if keyD ks then 1 else 0) - (if keyA ks then 1 else 0)
+          y = (if keyW ks then 1 else 0) - (if keyS ks then 1 else 0)
+      in (fromIntegral x * playerSpeed, fromIntegral y * playerSpeed)
 
 
 
+-- Simple helper to multiply vector by scalar
+mul :: (Float, Float) -> Float -> (Float, Float)
+mul (x, y) s = (x*s, y*s)
+
+dashPlayer :: Player -> Player
+dashPlayer p =
+  let (x, y) = playerPos p
+      (fx, fy) = facingDir p
+      dashDist = 50  -- fixed short dash distance
+      maxDashCooldown = 0.5  -- half a second cooldown
+  in p { playerPos = (x + fx * dashDist, y + fy * dashDist)
+       , dashCooldown = maxDashCooldown
+       }
 
 
---  WORKS WITH WASD
-
-
--- | Creates a projectile originating from the player.
+-- | Creates a projectile originating from the player in the direction the player is facing.
 spawnProjectile :: World -> World
 spawnProjectile world =
   let p       = player world
       run     = currentRun world
       chamber = currentChamber run
       (px, py) = playerPos p
-      (fx, fy) = facingDir p   -- Get the player's facing direction
+      (fx, fy) = facingDir p       -- Get the player's facing direction
+      (dirX, dirY) = normalize (fx, fy)
+      (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
 
-      -- Normalize facing direction so diagonal shots don't go faster
-      len = sqrt (fx*fx + fy*fy)
-      (nx, ny) = if len == 0 then (0,0) else (fx / len, fy / len)
-
-      -- Compute projectile velocity
-      (vx, vy) = (nx * projectileSpeed, ny * projectileSpeed)
-
-      -- Create the projectile just outside the player
+      -- Spawn just outside player in the facing direction
       newProj = Projectile
-        { projPos    = (px + nx * playerRadius, py + ny * playerRadius)
+        { projPos    = (px + dirX * playerRadius, py + dirY * playerRadius)
         , projVel    = (vx, vy)
         , projDamage = damage (currentWeapon p)
         , projSource = FromPlayer
@@ -273,7 +267,6 @@ spawnProjectile world =
         , projTTL    = projectileTTL
         }
 
-      -- Add the new projectile to the chamber
       newChamber = chamber { projectiles = newProj : projectiles chamber }
       newRun     = run { currentChamber = newChamber }
   in world { currentRun = newRun }
@@ -287,65 +280,185 @@ update :: Float -> World -> World
 update dt world =
   case gameState world of
     Running -> updateGame dt world
+    Paused  -> world
     _       -> world -- No updates in other states
 
 
--- | Main game logic update
+-- | Main game logic update.
+
 updateGame :: Float -> World -> World
 updateGame dt world =
-  let world1 = world { player = updatePlayerTimers dt (player world) }
-      world2 = movePlayer dt world1
+  let world1 = movePlayer dt world
+      world2 = resolvePlayerEnemyCollisions world1
       world3 = updateAI dt world2
       world4 = moveEntities dt world3
       world5 = handleCollisions world4
       world6 = updateProjectiles dt world5
-  in world6
+      world7 = updateDash dt world6  -- 
+  in world7
+
+-- This function now takes the whole world and returns a new one
+resolvePlayerEnemyCollisions :: World -> World
+resolvePlayerEnemyCollisions world =
+  let p = player world
+      chamber = currentChamber (currentRun world)
+      allEnemies = enemies chamber
+
+      -- The accumulator is (updated Player, list of resolved enemies)
+      -- We fold over all enemies, starting with the original player and an empty list
+      (finalPlayer, resolvedEnemies) = foldl' resolveOne (p, []) allEnemies
+
+      newChamber = chamber { enemies = resolvedEnemies }
+  in world { player = finalPlayer, currentRun = (currentRun world) { currentChamber = newChamber } }
 
 
--- | Update player timers (dash, cooldown) every frame
-updatePlayerTimers :: Float -> Player -> Player
-updatePlayerTimers dt p =
-  let p1 = if dashTimer p > 0
-           then let t = dashTimer p - dt
-                in p { dashTimer = max 0 t
-                     , isDashing = t > 0
-                     }
-           else p
-      p2 = if dashCooldown p1 > 0
-           then let c = dashCooldown p1 - dt
-                    newCount = if c <= 0 then 3 else dashCount p1
-                in p1 { dashCooldown = max 0 c
-                      , dashCount = newCount
-                      }
-           else p1
-  in p2
+-- This is the new helper function for the fold
+-- It takes the accumulator (Player, [Enemy]) and one Enemy
+-- It returns the new accumulator
+resolveOne :: (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
+resolveOne (p, resolvedList) enemy =
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos enemy
+      pRad     = playerRadius
+      eRad     = enemyRadius enemy -- Use the specific enemy's radius
+
+      vecX = px - ex
+      vecY = py - ey
+      dist = magnitude (vecX, vecY) + 0.0001 -- Add epsilon to avoid div by zero
+      overlap = (pRad + eRad) - dist
+
+  in if overlap > 0
+     -- Overlap! Push both player and enemy by half the overlap
+     then
+       let dirX = vecX / dist -- Normalized push direction
+           dirY = vecY / dist
+           pushAmount = overlap / 2
+
+           -- Push the player
+           newPx = px + dirX * pushAmount
+           newPy = py + dirY * pushAmount
+           newPlayer = p { playerPos = (newPx, newPy) }
+
+           -- Push the enemy (in the opposite direction)
+           newEx = ex - dirX * pushAmount
+           newEy = ey - dirY * pushAmount
+           newEnemy = enemy { enemyPos = (newEx, newEy) }
+
+       in (newPlayer, newEnemy : resolvedList) -- Return new player and add new enemy to list
+
+     -- No overlap, return the player unchanged and add the original enemy to the list
+     else (p, enemy : resolvedList)
 
 
--- | Update player position based on velocity or dash
+-- This function is defined inside `resolvePlayerEnemyCollisions` (in its `where` clause)
+-- or at the top level, passing in playerRadius.
+checkAndPush :: (Float, Float) -> Enemy -> (Float, Float)
+checkAndPush currentPPos enemy =
+  let (px, py) = currentPPos
+      (ex, ey) = enemyPos enemy
+      eRad     = enemyRadius enemy -- Make sure to use the enemy's radius
+      pRad     = playerRadius      -- This constant must be available
+
+      -- 1. Calculate vector from enemy to player
+      vecX = px - ex
+      vecY = py - ey
+
+      -- 2. Calculate distance
+      -- You'll need a magnitude helper: magnitude (x, y) = sqrt (x*x + y*y)
+      -- Add a small value to avoid division by zero if dist is 0
+      dist = magnitude (vecX, vecY) + 0.0001
+
+      -- 3. Calculate overlap
+      overlap = (pRad + eRad) - dist
+
+  in if overlap > 0
+     -- 4. They are overlapping! Push the player.
+     then
+       -- 4a. Find the push direction (normalize the vector)
+       let dirX = vecX / dist
+           dirY = vecY / dist
+
+       -- 4b. Calculate new position by pushing by 'overlap' amount
+           newX = px + dirX * overlap
+           newY = py + dirY * overlap
+       in (newX, newY)
+
+     -- 5. No overlap, return position unchanged for the next check
+     else currentPPos
+
+
+magnitude :: (Float, Float) -> Float
+magnitude (x, y) = sqrt (x*x + y*y)
+
+
+-- | Called when player presses the dash key (Space)
+tryDash :: World -> World
+tryDash world =
+  let p = player world
+  in if dashCount p > 0 && not (isDashing p)
+     then
+       let newPlayer = p { isDashing = True
+                         , dashTimer = dashDuration
+                         , dashCount = dashCount p - 1
+                         }
+       in world { player = newPlayer }
+     else world
+
+-- | Dash duration in seconds
+dashDuration :: Float
+dashDuration = 0.1
+
+-- | Multiplier for dash speed (how much faster than normal)
+dashMultiplier :: Float
+dashMultiplier = 3.5
+
+-- | Update player position, applying smooth dash velocity
 movePlayer :: Float -> World -> World
 movePlayer dt world =
   let p = player world
       (px, py) = playerPos p
-
-      -- Use dash velocity if dashing, otherwise normal velocity
-      (vx, vy) = if isDashing p
-                 then let (fx, fy) = facingDir p
-                      in (fx * dashSpeed, fy * dashSpeed)
-                 else playerVel p
-
-      -- Compute new position
-      newX = px + vx * dt
-      newY = py + vy * dt
-
-      -- Clamp to room boundaries
+      (vx, vy) = playerVel p
+      -- If dashing, apply dash speed multiplier
+      (dx, dy) = if isDashing p
+                 then (vx * dashMultiplier * dt, vy * dashMultiplier * dt)
+                 else (vx * dt, vy * dt)
+      newX = px + dx
+      newY = py + dy
+      -- Keep player inside the room
       halfRoomW = roomWidth / 2
       halfRoomH = roomHeight / 2
       clampedX = max (-halfRoomW) (min halfRoomW newX)
       clampedY = max (-halfRoomH) (min halfRoomH newY)
-
       newPlayer = p { playerPos = (clampedX, clampedY) }
   in world { player = newPlayer }
 
+-- | Update dash timers and regenerate dash counts
+updateDash :: Float -> World -> World
+updateDash dt world =
+  let p = player world
+
+      -- Reduce dash timer
+      newDashTimer = max 0 (dashTimer p - dt)
+      stillDashing = newDashTimer > 0
+
+      -- Regenerate dash if not full
+      dashRegenTime = 1.0  -- seconds to regenerate one dash
+      newDashCooldown = if dashCount p < maxDash then dashCooldown p + dt else dashCooldown p
+      (finalDashCount, finalCooldown) =
+        if newDashCooldown >= dashRegenTime && dashCount p < maxDash
+        then (dashCount p + 1, newDashCooldown - dashRegenTime)
+        else (dashCount p, newDashCooldown)
+
+      newPlayer = p { dashTimer = newDashTimer
+                    , isDashing = stillDashing
+                    , dashCooldown = finalCooldown
+                    , dashCount = finalDashCount
+                    }
+  in world { player = newPlayer }
+
+-- | Maximum dashes player can hold
+maxDash :: Int
+maxDash = 3
 
 -- | Update AI state for all enemies.
 updateAI :: Float -> World -> World
@@ -353,7 +466,7 @@ updateAI dt world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      
+
       -- Update AI state for each enemy
       newEnemies = map (updateEnemyAI p) (enemies chamber)
 
@@ -393,19 +506,19 @@ moveEnemy dt p e =
     Chasing ->
       let (px, py) = playerPos p
           (ex, ey) = enemyPos e
-          
+
           -- Vector from enemy to player
           vecToPlayer = (px - ex, py - ey)
           -- Normalized direction vector
           (dirX, dirY) = normalize vecToPlayer
-          
+
           -- Enemy speed (hardcoded for now)
           speed = 100
-          
+
           newX = ex + dirX * speed * dt
           newY = ey + dirY * speed * dt
       in e { enemyPos = (newX, newY) }
-    
+
     _ -> e -- Don't move if Idle or Attacking
 
 
@@ -426,10 +539,10 @@ updateProjectiles dt world =
   let run = currentRun world
       chamber = currentChamber run
       allProjs = projectiles chamber
-      
+
       -- Keep projectiles that still have Time To Live
       liveProjs = filter (\p -> projTTL p > 0) allProjs
-      
+
       newChamber = chamber { projectiles = liveProjs }
       newRun     = run { currentChamber = newChamber }
   in world { currentRun = newRun }
@@ -441,7 +554,7 @@ handleCollisions world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      
+
       -- Separate player and enemy projectiles
       (playerProjs, enemyProjs) = partitionProjs (projectiles chamber)
       allEnemies = enemies chamber
@@ -449,12 +562,12 @@ handleCollisions world =
       -- 1. Check player projectiles against enemies
       -- For each enemy, find projectiles that hit it
       (survivingEnemies, hitProjs) = checkHits allEnemies playerProjs
-      
+
       -- 2. Check enemy projectiles against player (TODO)
       -- For now, just apply damage to player
-      
+
       -- 3. Check enemies against player (TODO)
-      
+
       -- Filter out projectiles that hit something
       survivingProjs = filter (`notElem` hitProjs) playerProjs ++ enemyProjs
 
@@ -462,15 +575,14 @@ handleCollisions world =
       newChamber = chamber { enemies = survivingEnemies, projectiles = survivingProjs }
       newRun     = run { currentChamber = newChamber }
       -- We'd also update player health here if they were hit
-      
+
   in world { currentRun = newRun }
 
 
 -- | Checks all enemies against all player projectiles.
 -- Returns (surviving enemies, projectiles that hit)
 checkHits :: [Enemy] -> [Projectile] -> ([Enemy], [Projectile])
-checkHits allEnemies playerProjs =
-  foldr (applyProjectileToEnemies) (allEnemies, []) playerProjs
+checkHits allEnemies = foldr applyProjectileToEnemies (allEnemies, [])
 
 
 -- | Helper for checkHits. Applies one projectile to a list of enemies.
@@ -485,16 +597,14 @@ applyProjectileToEnemies proj (enemies, hitProjs) =
 -- | Helper for applyProjectileToEnemies. Checks one projectile against one enemy.
 -- Returns (list of enemies to keep, bool if hit occurred)
 checkHit :: Projectile -> Enemy -> ([Enemy], Bool) -> ([Enemy], Bool)
-checkHit proj enemy (survivors, alreadyHit) =
-  if alreadyHit -- If this projectile already hit an enemy, just pass this enemy through
-  then (enemy : survivors, True)
-  else if isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
-       then -- Hit! Apply damage.
-         let newHealth = enemyHealth enemy - projDamage proj
-         in if newHealth > 0
-            then (enemy { enemyHealth = newHealth } : survivors, True) -- Enemy survives
-            else (survivors, True) -- Enemy dies, don't add to list
-       else (enemy : survivors, False) -- No hit
+checkHit proj enemy (survivors, alreadyHit)
+    | alreadyHit    = (enemy : survivors, True) -- Projectile already hit; pass enemy through
+    | not collision = (enemy : survivors, False) -- No collision
+    | newHealth > 0 = (enemy { enemyHealth = newHealth } : survivors, True) -- Hit! Enemy survives
+    | otherwise     = (survivors, True) -- Hit! Enemy dies
+  where
+    collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
+    newHealth = enemyHealth enemy - projDamage proj
 
 
 -- | Simple circle collision check.
@@ -512,11 +622,6 @@ partitionProjs :: [Projectile] -> ([Projectile], [Projectile])
 partitionProjs = partition (\p -> projSource p == FromPlayer)
 
 
--- | Helper to 'partition' a list.
-partition :: (a -> Bool) -> [a] -> ([a], [a])
-partition p xs = (filter p xs, filter (not . p) xs)
-
-
 -- --- VECTOR MATH ---
 
 -- | Normalize a 2D vector.
@@ -524,3 +629,4 @@ normalize :: (Float, Float) -> (Float, Float)
 normalize (x, y) =
   let len = sqrt (x*x + y*y)
   in if len == 0 then (0, 0) else (x / len, y / len)
+

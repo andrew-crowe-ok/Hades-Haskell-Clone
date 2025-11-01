@@ -33,8 +33,8 @@ data Player = Player
   , currentBoons  :: [Boon]
   , facingDir :: (Float, Float)   -- Where Player is facing
   , dashCount   :: Int             
-  , dashCooldown  :: Float
-  , dashTimer :: Float
+  , dashCooldown  :: Float         -- How long to wait for 3 dashes
+  , dashTimer :: Float              -- how long each 
   , isDashing      :: Bool
   } deriving (Show, Read)
 
