@@ -40,3 +40,18 @@ projectileSpeed = 400
 
 projectileTTL :: Float -- Time to Live
 projectileTTL = 2.0 -- seconds
+
+dashSpeed :: Float
+dashSpeed = 400  -- faster than normal playerSpeed
+
+-- | Dash duration in seconds
+dashDuration :: Float
+dashDuration = 0.1
+
+-- | Multiplier for dash speed (how much faster than normal)
+dashMultiplier :: Float
+dashMultiplier = 3.5
+
+-- | Maximum dashes player can hold
+maxDash :: Int
+maxDash = 3
