@@ -2,22 +2,22 @@ module Main where
 
 import Graphics.Gloss
 import Graphics.Gloss.Interface.Pure.Game hiding (KeyState)
-import System.Random ( StdGen, getStdGen, splitGen )
+import System.Random ( StdGen, getStdGen, split )
 import Data.List (foldl', partition)
+import Data.Maybe (isJust)
 
 import Types
 import Constants
 
--- Main entry point.
--- We now get a random generator from IO and pass it to initialWorld.
+
 main :: IO ()
 main = do
-  gen <- getStdGen -- Get an initial random generator
+  gen <- getStdGen
   play
     window
     bgColor
     fps
-    (initialWorld gen) -- Use it to build the world
+    (initialWorld gen)
     draw
     handleInput
     update
@@ -48,7 +48,7 @@ initialPlayer = Player
   , baseDmgResist = 0.0
   , currentWeapon = Weapon Sword 10 2.0 0.0 -- Sword, 10 dmg, 2 atks/sec
   , currentBoons  = []
-  , dashCount     = 2
+  , dashCount     = 3
   , dashCooldown  = 0
   , dashTimer     = 0
   , isDashing     = False
@@ -59,12 +59,13 @@ initialPlayer = Player
 
 initialKeyState :: KeyState
 initialKeyState = KeyState
-  { keyW      = False
-  , keyA      = False
-  , keyS      = False
-  , keyD      = False
-  , keyAttack = False
-  , keyDash   = False
+  { keyW        = False
+  , keyA        = False
+  , keyS        = False
+  , keyD        = False
+  , keyAttack   = False
+  , keyDash     = False
+  , keyInteract = False
   }
 
 
@@ -207,6 +208,7 @@ drawGame world = pictures
   , drawPlayer (player world)
   , drawEnemies (enemies (currentChamber (currentRun world)))
   , drawProjectiles (projectiles (currentChamber (currentRun world)))
+  , drawReward (reward (currentChamber (currentRun world)))
   , drawUI world
   ]
 
@@ -245,15 +247,37 @@ drawProjectile p =
   in translate x y $ color projColor $ circleSolid (projRadius p)
 
 
+-- ADDED: Draws the reward on the ground, if it exists.
+drawReward :: Maybe Reward -> Picture
+drawReward Nothing = blank
+drawReward (Just (HealReward _ pos)) =
+  let (x, y) = pos
+  in translate x y $ color green $ circleSolid rewardRadius
+drawReward (Just (SimpleBoon _ pos)) =
+  let (x, y) = pos
+  in translate x y $ color orange $ circleSolid rewardRadius
+drawReward (Just (CurrencyReward _ pos)) =
+  let (x, y) = pos
+  in translate x y $ color yellow $ circleSolid rewardRadius
+drawReward (Just (BoonChoice _ _ _)) =
+  let (x, y) = (0, 100)
+  in translate x y $ color (light orange) $ thickCircle rewardRadius 5
+
+
 drawUI :: World -> Picture
 drawUI world =
   let p = player world
       pStats = calculateStats p -- Get stats to show max health
+      chamber = currentChamber (currentRun world)
       healthText = "Health: " ++ show (currentHealth p) ++ " / " ++ show (statMaxHealth pStats)
       dashText = "Dashes: " ++ show (dashCount p)
+      clearedText = if isCleared chamber && isJust (reward chamber)
+                    then translate (-150) 0 $ scale 0.2 0.2 $ color yellow $ text "Press [E] to collect"
+                    else blank
   in pictures
     [ translate (-380) 280 $ scale 0.15 0.15 $ color white $ text healthText
     , translate (-380) 260 $ scale 0.15 0.15 $ color white $ text dashText
+    , clearedText
     ]
 
 
@@ -273,6 +297,7 @@ handleRunningInput event world =
     EventKey (Char 'd') Down _ _ -> world { keys = k { keyD = True } }
     EventKey (Char 'f') Down _ _ -> world { keys = k { keyAttack = True } }
     EventKey (SpecialKey KeySpace) Down _ _ -> world { keys = k { keyDash = True } }
+    EventKey (Char 'e') Down _ _ -> world { keys = k { keyInteract = True } }
 
     -- Key releases
     EventKey (Char 'w') Up   _ _ -> world { keys = k { keyW = False } }
@@ -281,6 +306,7 @@ handleRunningInput event world =
     EventKey (Char 'd') Up   _ _ -> world { keys = k { keyD = False } }
     EventKey (Char 'f') Up   _ _ -> world { keys = k { keyAttack = False } }
     EventKey (SpecialKey KeySpace) Up _ _ -> world { keys = k { keyDash = False } }
+    EventKey (Char 'e') Up   _ _ -> world { keys = k { keyInteract = False } }
 
     -- Pause
     EventKey (SpecialKey KeyEnter) Down _ _ -> world { gameState = Paused }
@@ -303,7 +329,7 @@ calculateStats p =
         , statDmgResist    = baseDmgResist p
         , statAttackDmg    = baseDmg w
         , statAttackRate   = baseAttackRate w
-        , statDashCount    = maxDash -- From Constants.hs
+        , statDashCount    = maxDash
         }
       -- 2. Fold over the boon list, applying each one in order
   in foldl' applyBoon baseStats (currentBoons p)
@@ -312,12 +338,12 @@ calculateStats p =
 applyBoon :: PlayerStats -> Boon -> PlayerStats
 applyBoon stats (AttackDmg val) =
   stats { statAttackDmg = statAttackDmg stats + val }
-applyBoon stats (AttackSpeed mod) =
-  stats { statAttackRate = statAttackRate stats * mod }
+applyBoon stats (AttackSpeed modifier) =
+  stats { statAttackRate = statAttackRate stats * modifier }
 applyBoon stats (ExtraHealth val) =
   stats { statMaxHealth = statMaxHealth stats + val }
-applyBoon stats (MoveSpeed mod) =
-  stats { statSpeed = statSpeed stats * mod }
+applyBoon stats (MoveSpeed modifier) =
+  stats { statSpeed = statSpeed stats * modifier }
 applyBoon stats (DmgResist val) =
   -- Ensure resist cannot go above, say, 90%
   stats { statDmgResist = min 0.9 (statDmgResist stats + val) }
@@ -419,7 +445,6 @@ handleDashing :: Float -> World -> PlayerStats -> World
 handleDashing dt world pStats =
   let p = player world
       k = keys world
-      t = worldTime world
       maxDashes = statDashCount pStats
 
       -- 1. Check for dash start
@@ -465,7 +490,7 @@ spawnProjectile world pStats =
       newProj = Projectile
         { projPos    = (px + dirX * playerRadius, py + dirY * playerRadius)
         , projVel    = (vx, vy)
-        , projDmg = statAttackDmg pStats -- USE CALCULATED STAT
+        , projDmg    = statAttackDmg pStats
         , projSource = FromPlayer
         , projRadius = projectileRadius
         , projTTL    = projectileTTL
@@ -702,6 +727,85 @@ checkPlayerDeath world =
   else world
 
 
+-- Checks if the room is cleared and spawns a reward.
+checkRoomCleared :: World -> World
+checkRoomCleared world =
+  let run = currentRun world
+      chamber = currentChamber run
+  in if not (isCleared chamber) && null (enemies chamber)
+     then -- Room was JUST cleared!
+          let (gen1, gen2) = split (rng world)
+              (newReward, _gen) = generateReward gen1
+              newChamber = chamber { isCleared = True, reward = Just newReward }
+              newRun = run { currentChamber = newChamber }
+          in world { currentRun = newRun, rng = gen2 }
+     else world -- Room not cleared, or already was
+
+
+-- Generates a reward. For now, always the AttackSpeed boon.
+generateReward :: StdGen -> (Reward, StdGen)
+generateReward gen =
+  let boon = AttackSpeed 1.2 -- 20% attack speed increase
+      pos = (0, 100) -- Spawn near the center-top
+  in (SimpleBoon boon pos, gen) -- We pass 'gen' back, though it's unused here
+
+
+-- Handles player interaction (e.g., collecting rewards).
+handleInteraction :: World -> World
+handleInteraction world =
+  let k = keys world
+      p = player world
+      run = currentRun world
+      chamber = currentChamber run
+  in if keyInteract k && isCleared chamber
+     then -- Player is pressing interact in a cleared room
+          case reward chamber of
+            Nothing -> world -- No reward to collect
+            Just r  ->
+              let (rPos, rRad) = getRewardPosRad r
+              in if isColliding (playerPos p) playerRadius rPos rRad
+                 then -- Player is colliding with reward! Collect it.
+                      let world' = applyReward r world
+                          newChamber = chamber { reward = Nothing } -- Remove reward
+                          newRun = run { currentChamber = newChamber }
+                      in world' { currentRun = newRun }
+                 else world -- Pressing E but not on reward
+     else world -- Not pressing E
+
+
+-- Helper to get position and radius from any Reward type.
+getRewardPosRad :: Reward -> ((Float, Float), Float)
+getRewardPosRad (BoonChoice _ _ _) = ((0, 100), rewardRadius)
+getRewardPosRad (SimpleBoon _ pos)   = (pos, rewardRadius)
+getRewardPosRad (CurrencyReward _ pos) = (pos, rewardRadius)
+getRewardPosRad (BoonChoice _ _ _) = ((0, 100), rewardRadius)
+
+
+-- Applies the collected reward to the player.
+applyReward :: Reward -> World -> World
+applyReward (HealReward amt _) world =
+  let p = player world
+      pStats = calculateStats p
+      newHealth = min (statMaxHealth pStats) (currentHealth p + amt)
+  in world { player = p { currentHealth = newHealth } }
+
+
+applyReward (SimpleBoon boon _) world =
+  let p = player world
+      newBoons = boon : currentBoons p
+  in world { player = p { currentBoons = newBoons } }
+
+
+applyReward (CurrencyReward amt _) world =
+  let run = currentRun world
+      newCurrency = runCurrency run + amt
+  in world { currentRun = run { runCurrency = newCurrency } }
+
+-- Handle BoonChoice by transitioning to a new state
+applyReward (BoonChoice _ _ _) world =
+  world { gameState = BoonSelection } -- We'll implement this state later
+
+
 -- --- VECTOR MATH ---
 
 -- Simple circle collision check.
@@ -725,6 +829,6 @@ normalize (x, y) =
   let len = sqrt (x*x + y*y)
   in if len == 0 then (0, 0) else (x / len, y / len)
 
--- | Helper function to get the magnitude (length) of a vector.
+-- Helper function to get the magnitude (length) of a vector.
 magnitude :: (Float, Float) -> Float
 magnitude (x, y) = sqrt (x*x + y*y)

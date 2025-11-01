@@ -55,3 +55,6 @@ dashMultiplier = 3.5
 -- | Maximum dashes player can hold
 maxDash :: Int
 maxDash = 3
+
+rewardRadius :: Float -- ADDED
+rewardRadius = 15

@@ -14,24 +14,23 @@ data GameState
 
 
 data World = World
-  { -- currentScene :: Scene -- DELETED. We will use gameState as the scene manager.
-    gameState    :: GameState
+  { gameState    :: GameState
   , player       :: Player
   , currentRun   :: RunState
   , metaProgress :: MetaProgress
   , rng          :: StdGen
   , keys         :: KeyState
-  , worldTime    :: Float -- ADDED: Tracks total elapsed time for cooldowns
+  , worldTime    :: Float
   } deriving (Show)
 
 
 data Player = Player
   { playerPos        :: (Float, Float)
   , playerVel        :: (Float, Float)
-  , currentHealth    :: Int -- RENAMED from playerHealth
-  , baseMaxHealth    :: Int -- RENAMED from maxHealth
-  , baseSpeed        :: Float -- ADDED: Base speed before boons
-  , baseDmgResist :: Float -- ADDED: Base resist (0.0 = 0%)
+  , currentHealth    :: Int
+  , baseMaxHealth    :: Int
+  , baseSpeed        :: Float
+  , baseDmgResist    :: Float
   , currentWeapon    :: Weapon
   , currentBoons     :: [Boon]
   , facingDir        :: (Float, Float)
@@ -45,20 +44,21 @@ data Player = Player
 data PlayerStats = PlayerStats
   { statMaxHealth    :: Int
   , statSpeed        :: Float
-  , statDmgResist :: Float
-  , statAttackDmg :: Int
+  , statDmgResist    :: Float
+  , statAttackDmg    :: Int
   , statAttackRate   :: Float
   , statDashCount    :: Int
   } deriving (Show, Read)
 
 
 data KeyState = KeyState
-    { keyW :: Bool
-    , keyA :: Bool
-    , keyS :: Bool
-    , keyD :: Bool
-    , keyAttack :: Bool -- ADDED
-    , keyDash   :: Bool -- ADDED
+    { keyW        :: Bool
+    , keyA        :: Bool
+    , keyS        :: Bool
+    , keyD        :: Bool
+    , keyAttack   :: Bool
+    , keyDash     :: Bool
+    , keyInteract :: Bool
     } deriving (Show, Read)
 
 
@@ -85,15 +85,14 @@ data Chamber = Chamber
 
 
 data Enemy = Enemy
-  { enemyPos      :: (Float, Float)
-  -- Use eCurrentHealth to avoid name clash with player's currentHealth
-  , eCurrentHealth :: Int -- RENAMED from enemyHealth
-  , eBaseHealth    :: Int -- ADDED
-  , eBaseSpeed     :: Float -- ADDED
-  , eBaseDmg    :: Int -- ADDED
-  , enemyType     :: EnemyType
-  , aiState       :: AiState
-  , enemyRadius   :: Float
+  { enemyPos       :: (Float, Float)
+  , eCurrentHealth :: Int
+  , eBaseHealth    :: Int
+  , eBaseSpeed     :: Float
+  , eBaseDmg       :: Int
+  , enemyType      :: EnemyType
+  , aiState        :: AiState
+  , enemyRadius    :: Float
   } deriving (Show, Read)
 
 
@@ -113,10 +112,10 @@ data AiState
 data Projectile = Projectile
     { projPos    :: (Float, Float)
     , projVel    :: (Float, Float)
-    , projDmg :: Int
+    , projDmg    :: Int
     , projSource :: ProjectileSource
     , projRadius :: Float
-    , projTTL    :: Float -- Time to Live (seconds)
+    , projTTL    :: Float
     } deriving (Show, Read, Eq)
 
 
@@ -125,10 +124,10 @@ data ProjectileSource = FromPlayer | FromEnemy
 
 
 data Weapon = Weapon
-    { weaponType   :: WeaponType
-    , baseDmg   :: Int -- RENAMED from damage
-    , baseAttackRate :: Float -- RENAMED from attackRate
-    , lastAttack   :: Float
+    { weaponType     :: WeaponType
+    , baseDmg        :: Int
+    , baseAttackRate :: Float
+    , lastAttack     :: Float
     } deriving (Show, Read)
 
 
@@ -140,16 +139,17 @@ data Boon
     = AttackDmg Int
     | AttackSpeed Float
     | ExtraHealth Int
-    | MoveSpeed Float     -- ADDED: Multiplier
-    | DmgResist Float  -- ADDED: Additive (0.1 = 10%)
-    | ExtraDash Int       -- ADDED: Additive
+    | MoveSpeed Float
+    | DmgResist Float
+    | ExtraDash Int
     deriving (Show, Read)
 
 
 data Reward
-    = Heal Int
+    = HealReward Int (Float, Float)
+    | SimpleBoon Boon (Float, Float)
     | BoonChoice Boon Boon Boon
-    | Currency Int
+    | CurrencyReward Int (Float, Float)
     deriving (Show, Read)
 
 
@@ -157,6 +157,3 @@ data MetaUpgrade
     = StartWithMoreHealth
     | UnlockWeapon WeaponType
     deriving (Show, Read)
-
--- DELETED: MenuState, GameOverState, and Scene
--- These are no longer needed as 'GameState' handles everything.
