@@ -34,7 +34,7 @@ data Player = Player
   , facingDir :: (Float, Float)   -- Where Player is facing
   , dashCount   :: Int             
   , dashCooldown  :: Float         -- How long to wait for 3 dashes
-  , dashTimer :: Float              -- how long each 
+  , dashTimer :: Float              -- how long each dash lasts
   , isDashing      :: Bool
   } deriving (Show, Read)
 
