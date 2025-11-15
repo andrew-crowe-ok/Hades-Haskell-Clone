@@ -64,6 +64,7 @@ initialKeyState = KeyState
   , keyS        = False
   , keyD        = False
   , keyAttack   = False
+  , keyMelee    = False
   , keyDash     = False
   , keyInteract = False
   }
@@ -296,6 +297,8 @@ handleRunningInput event world =
     EventKey (Char 's') Down _ _ -> world { keys = k { keyS = True } }
     EventKey (Char 'd') Down _ _ -> world { keys = k { keyD = True } }
     EventKey (Char 'f') Down _ _ -> world { keys = k { keyAttack = True } }
+    EventKey (Char 'g') Down _ _ -> world { keys = k { keyMelee = True } }
+    EventKey (Char 'g') Up   _ _ -> world { keys = k { keyMelee = False } }
     EventKey (SpecialKey KeySpace) Down _ _ -> world { keys = k { keyDash = True } }
     EventKey (Char 'e') Down _ _ -> world { keys = k { keyInteract = True } }
 
@@ -353,7 +356,6 @@ applyBoon stats (ExtraDash val) =
 
 -- --- UPDATE (Game) ---
 
--- Main game logic update pipeline.
 updateGame :: Float -> World -> World
 updateGame dt world =
   let p = player world
@@ -364,36 +366,39 @@ updateGame dt world =
       -- 2. Update player velocity based on key state
       world1 = updatePlayerVelocity world pStats
 
-      -- 3. Check for and execute attacks (with cooldown)
+      -- 3. Check for and execute ranged attacks (shooting)
       world2 = handleAttacks world1 pStats
 
-      -- 4. Check for and execute dashes (with cooldown)
-      world3 = handleDashing dt world2 pStats
+      -- 4. Check for and execute melee attacks (sword 'g')
+      world3 = handleMelee world2 pStats
 
-      -- 5. Check for player interaction (collecting rewards)
-      world4 = handleInteraction world3
+      -- 5. Check for and execute dashes (with cooldown)
+      world4 = handleDashing dt world3 pStats
 
-      -- 6. Move player (applying dash velocity if dashing)
-      world5 = movePlayer dt world4
+      -- 6. Check for player interaction (collecting rewards)
+      world5 = handleInteraction world4
 
-      -- 7. Resolve physics collisions
-      world6 = resolvePlayerEnemyCollisions world5
+      -- 7. Move player (applying dash velocity if dashing)
+      world6 = movePlayer dt world5
 
-      -- 8. Update AI and move non-player entities
-      world7 = updateAI dt world6
-      world8 = moveEntities dt world7
+      -- 8. Resolve physics collisions (apply contact damage + knockback using stats)
+      world7 = resolvePlayerEnemyCollisions pStats world6
 
-      -- 9. Handle projectile hits and damage
-      world9 = handleCollisions world8 pStats
+      -- 9. Update AI and move non-player entities
+      world8 = updateAI dt world7
+      world9 = moveEntities dt world8
 
-      -- 10. Check if room is cleared (and spawn reward)
-      world10 = checkRoomCleared world9
+      -- 10. Handle projectile hits and damage
+      world10 = handleCollisions world9 pStats
 
-      -- 11. Cleanup projectiles
-      world11 = updateProjectiles dt world10
+      -- 11. Check if room is cleared (and spawn reward)
+      world11 = checkRoomCleared world10
 
-      -- 12. Check for player death
-      finalWorld = checkPlayerDeath world11
+      -- 12. Cleanup projectiles
+      world12 = updateProjectiles dt world11
+
+      -- 13. Check for player death
+      finalWorld = checkPlayerDeath world12
 
   in finalWorld
 
@@ -444,6 +449,58 @@ handleAttacks world pStats =
 
      -- Either not attacking or on cooldown
      else world
+
+-- Handle melee (sword) attack using keyMelee ('g')
+-- Damages enemies inside a short arc/box in front of the player.
+handleMelee :: World -> PlayerStats -> World
+handleMelee world pStats =
+  let p = player world
+      w = currentWeapon p
+      k = keys world
+      t = worldTime world
+
+      cooldown = 1.0 / statAttackRate pStats
+      ready = t - lastAttack w >= cooldown
+
+  in if not (keyMelee k) || not ready || weaponType w /= Sword || isDashing p
+       then world
+       else
+         let (px,py) = playerPos p
+             (fx,fy) = normalize (facingDir p)
+             -- melee hit location is in front of player
+             swordRange = 40    -- distance ahead of player
+             swordRadius = 36   -- radius of the hit region
+
+             hitCenter = (px + fx * swordRange, py + fy * swordRange)
+             run = currentRun world
+             chamber = currentChamber run
+             allEnemies = enemies chamber
+
+             dmg = statAttackDmg pStats
+
+             -- Apply damage and simple knockback to each enemy touched.
+             (updatedEnemies, _) = foldr
+               (\e (acc, _) ->
+                  let ep = enemyPos e
+                      dist = magnitude (subV ep hitCenter)
+                  in if dist <= swordRadius
+                       then
+                         let newHP = eCurrentHealth e - dmg
+                             -- knock enemy away from player
+                             (kx, ky) = normalize (subV ep (playerPos p))
+                             knockBackAmt = 12
+                             newPos = addV ep (scaleV knockBackAmt (kx, ky))
+                             newEnemy = e { eCurrentHealth = newHP, enemyPos = newPos }
+                         in if newHP <= 0 then (acc, ()) else (newEnemy : acc, ())
+                       else (e : acc, ())
+               ) ([], ()) allEnemies
+
+             -- Update lastAttack time on the weapon
+             newW = w { lastAttack = t }
+             newP = p { currentWeapon = newW }
+
+             newChamber = chamber { enemies = updatedEnemies }
+         in world { player = newP, currentRun = run { currentChamber = newChamber } }
 
 
 -- Checks if the player is trying to dash and manages dash state.
@@ -527,20 +584,66 @@ movePlayer dt world =
   in world { player = newPlayer }
 
 
--- This function now takes the whole world and returns a new one
-resolvePlayerEnemyCollisions :: World -> World
-resolvePlayerEnemyCollisions world =
+-- This function now takes PlayerStats and the whole world and returns a new one
+resolvePlayerEnemyCollisions :: PlayerStats -> World -> World
+resolvePlayerEnemyCollisions pStats world =
   let p = player world
       chamber = currentChamber (currentRun world)
       allEnemies = enemies chamber
 
       -- The accumulator is (updated Player, list of resolved enemies)
-      (finalPlayer, resolvedEnemies) = foldl' resolveOne (p, []) allEnemies
+      (finalPlayer, resolvedEnemies) = foldl' (resolveOne pStats) (p, []) allEnemies
 
       newChamber = chamber { enemies = resolvedEnemies }
   in world { player = finalPlayer, currentRun = (currentRun world) { currentChamber = newChamber } }
 
 
+-- Helper for the fold, resolves collision between player and one enemy
+resolveOne :: PlayerStats -> (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
+resolveOne pStats (p, resolvedList) enemy =
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos enemy
+      pRad     = playerRadius
+      eRad     = enemyRadius enemy
+
+      vecX = px - ex
+      vecY = py - ey
+      dist = magnitude (vecX, vecY) + 0.0001
+      overlap = (pRad + eRad) - dist
+
+  in if overlap > 0 && not (isDashing p) -- Make player invulnerable while dashing
+     then
+       let dirX = vecX / dist
+           dirY = vecY / dist
+           pushAmount = overlap / 2
+
+           -- Push positions
+           newPx = px + dirX * pushAmount
+           newPy = py + dirY * pushAmount
+           -- Damage the player by enemy base damage, apply resist
+           resist = statDmgResist pStats
+           rawDmg = eBaseDmg enemy
+           dmgTaken = round $ fromIntegral rawDmg * (1.0 - resist)
+           newHealth = currentHealth p - dmgTaken
+
+           -- Slight additional knockback to player (so they move away)
+           playerKnockStrength = 12
+           newPlayerPos = (newPx + dirX * playerKnockStrength, newPy + dirY * playerKnockStrength)
+
+           newPlayer = p { playerPos = newPlayerPos, currentHealth = newHealth }
+
+           -- Move enemy away from player
+           newEx = ex - dirX * pushAmount
+           newEy = ey - dirY * pushAmount
+           newEnemy = enemy { enemyPos = (newEx, newEy) }
+
+       in (newPlayer, newEnemy : resolvedList)
+
+     -- No overlap, or player is dashing
+     else (p, enemy : resolvedList)
+
+
+{-
 -- Helper for the fold, resolves collision between player and one enemy
 resolveOne :: (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
 resolveOne (p, resolvedList) enemy =
@@ -574,7 +677,7 @@ resolveOne (p, resolvedList) enemy =
      -- No overlap, or player is dashing
      else (p, enemy : resolvedList)
 
-
+-}
 -- Update AI state for all enemies.
 updateAI :: Float -> World -> World
 updateAI dt world =
@@ -838,3 +941,13 @@ normalize (x, y) =
 -- Helper function to get the magnitude (length) of a vector.
 magnitude :: (Float, Float) -> Float
 magnitude (x, y) = sqrt (x*x + y*y)
+
+-- Vector helpers
+addV :: (Float,Float) -> (Float,Float) -> (Float,Float)
+addV (ax,ay) (bx,by) = (ax+bx, ay+by)
+
+subV :: (Float,Float) -> (Float,Float) -> (Float,Float)
+subV (ax,ay) (bx,by) = (ax-bx, ay-by)
+
+scaleV :: Float -> (Float,Float) -> (Float,Float)
+scaleV s (x,y) = (s*x, s*y)

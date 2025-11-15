@@ -57,6 +57,7 @@ data KeyState = KeyState
     , keyS        :: Bool
     , keyD        :: Bool
     , keyAttack   :: Bool
+    , keyMelee    :: Bool
     , keyDash     :: Bool
     , keyInteract :: Bool
     } deriving (Show, Read)
