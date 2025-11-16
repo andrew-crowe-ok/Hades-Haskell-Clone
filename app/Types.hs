@@ -79,12 +79,11 @@ data MetaProgress = MetaProgress
 
 
 data Chamber = Chamber
-  { enemies     :: [Enemy]
+  { enemies   :: [Enemy]
   , projectiles :: [Projectile]
-  , reward      :: Maybe Reward
-  , isCleared   :: Bool
+  , isCleared :: Bool
+  , rewards   :: [Reward]  
   } deriving (Show, Read)
-
 
 data Enemy = Enemy
   { enemyPos       :: (Float, Float)
@@ -141,16 +140,16 @@ data WeaponType = Sword | Bow
 
 
 data Boon
-    = AttackDmg Int
-    | AttackSpeed Float
-    | ExtraHealth Int
-    | MoveSpeed Float
-    | DmgResist Float
+    = AttackDmg Int           -- General damage upgrade to both sword and projectiles
+    | AttackSpeed Float        -- faster shooting
+    | ExtraHealth Int       --  more health  (visual health reflects this.)
+    | MoveSpeed Float                 
+    | DmgResist Float           -- take less damage on hit
     | ExtraDash Int
     | LongSword Int               -- +damage, longer melee range
     | MultiShot Int               -- number of extra projectiles per shot
-    | RapidFire Float             -- multiply attack rate
-    | SniperShot Int Float        -- damage, maybe slightly slower projectile
+    | RapidFire Float             -- low famage, medium speed 
+    | SniperShot Int Float        -- more damage, faster projectile
     | RotatingShield Float Float  -- shield radius, cooldown/regen time
     deriving (Show, Read)
 

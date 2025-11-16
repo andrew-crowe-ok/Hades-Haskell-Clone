@@ -76,7 +76,7 @@ initialRun = RunState
   { currentChamber = Chamber
       { enemies     = [initialEnemy]
       , projectiles = []
-      , reward      = Nothing
+      , rewards      = []       
       , isCleared   = False
       }
   , chamberLevel   = 1
@@ -87,7 +87,7 @@ initialRun = RunState
 -- A lookup table for base enemy stats.
 -- Returns (baseHealth, baseSpeed, baseDamage, radius)
 baseEnemyStats :: EnemyType -> (Int, Float, Int, Float)
-baseEnemyStats MeleeBasic = (50, 100, 10, defaultEnemyRadius)
+baseEnemyStats MeleeBasic = (10, 100, 10, defaultEnemyRadius)
 baseEnemyStats RangedTurrent = (30, 0, 8, defaultEnemyRadius)
 -- Add new enemy types here, e.g.:
 -- baseEnemyStats MeleeFast = (30, 150, 5, playerRadius)
@@ -210,7 +210,7 @@ drawGame world = pictures
   , drawPlayer (player world) world
   , drawEnemies (enemies (currentChamber (currentRun world)))
   , drawProjectiles (projectiles (currentChamber (currentRun world)))
-  , drawReward (reward (currentChamber (currentRun world)))
+  , drawRewards (rewards (currentChamber (currentRun world))) 
   , drawUI world
   ]
 
@@ -268,21 +268,35 @@ drawProjectile p =
   in translate x y $ color projColor $ circleSolid (projRadius p)
 
 
+boonColor :: Boon -> Color
+boonColor (AttackDmg _)       = red
+boonColor (AttackSpeed _)     = blue
+boonColor (ExtraHealth _)     = green
+boonColor (MoveSpeed _)       = yellow
+boonColor (DmgResist _)       = violet
+boonColor (ExtraDash _)       = orange
+boonColor (LongSword _)       = cyan
+boonColor (MultiShot _)       = magenta
+boonColor (RapidFire _)       = rose
+boonColor (SniperShot _ _)    = white
+boonColor (RotatingShield _ _) = greyN 0.5
+
 -- ADDED: Draws the reward on the ground, if it exists.
-drawReward :: Maybe Reward -> Picture
-drawReward Nothing = blank
-drawReward (Just (HealReward _ pos)) =
-  let (x, y) = pos
-  in translate x y $ color green $ circleSolid rewardRadius
-drawReward (Just (SimpleBoon _ pos)) =
-  let (x, y) = pos
-  in translate x y $ color orange $ circleSolid rewardRadius
-drawReward (Just (CurrencyReward _ pos)) =
-  let (x, y) = pos
-  in translate x y $ color yellow $ circleSolid rewardRadius
-drawReward (Just (BoonChoice _ _ _)) =
-  let (x, y) = (0, 100)
-  in translate x y $ color (light orange) $ thickCircle rewardRadius 5
+-- Draw all rewards in the chamber
+drawRewards :: [Reward] -> Picture
+drawRewards = pictures . map drawSingleReward
+
+-- Draw a single reward with different colors per Boon type
+drawSingleReward :: Reward -> Picture
+drawSingleReward (HealReward _ (x, y)) =
+  translate x y $ color green $ circleSolid rewardRadius
+drawSingleReward (CurrencyReward _ (x, y)) =
+  translate x y $ color yellow $ circleSolid rewardRadius
+drawSingleReward (SimpleBoon b (x, y)) =
+  translate x y $ color (boonColor b) $ circleSolid rewardRadius
+drawSingleReward (BoonChoice _ _ _) =
+  translate 0 100 $ color (light orange) $ thickCircle rewardRadius 5
+
 
 
 drawUI :: World -> Picture
@@ -292,7 +306,7 @@ drawUI world =
       chamber = currentChamber (currentRun world)
       healthText = "Health: " ++ show (currentHealth p) ++ " / " ++ show (statMaxHealth pStats)
       dashText = "Dashes: " ++ show (dashCount p)
-      clearedText = if isCleared chamber && isJust (reward chamber)
+      clearedText = if isCleared chamber && not (null (rewards chamber))
                     then translate (-150) 0 $ scale 0.2 0.2 $ color yellow $ text "Press [E] to collect"
                     else blank
   in pictures
@@ -480,50 +494,48 @@ handleMelee world pStats =
       w = currentWeapon p
       k = keys world
       t = worldTime world
-
       cooldown = 1.0 / statAttackRate pStats
       ready = t - lastAttack w >= cooldown
-
   in if not (keyMelee k) || not ready || weaponType w /= Sword || isDashing p
-       then world
-       else
-         let (px,py) = playerPos p
-             (fx,fy) = normalize (facingDir p)
-             -- melee hit location is in front of player
-             swordRange = 40    -- distance ahead of player
-             swordRadius = 36   -- radius of the hit region
+     then world
+     else
+       let (px, py) = playerPos p
+           (fx, fy) = normalize (facingDir p)
+           swordRange = 40
+           swordRadius = 36
+           hitCenter = (px + fx * swordRange, py + fy * swordRange)
+           run = currentRun world
+           chamber = currentChamber run
+           allEnemies = enemies chamber
+           dmg = statAttackDmg pStats
+           gen = rng world
 
-             hitCenter = (px + fx * swordRange, py + fy * swordRange)
-             run = currentRun world
-             chamber = currentChamber run
-             allEnemies = enemies chamber
+           -- Fold over enemies and apply damage, possibly spawn boons
+           (updatedEnemies, newRewards, gen') =
+             foldl
+               (\(accEnemies, accRewards, g) e ->
+                   let dist = magnitude (subV (enemyPos e) hitCenter)
+                   in if dist <= swordRadius
+                      then
+                        let newHP = eCurrentHealth e - dmg
+                        in if newHP <= 0
+                           then
+                             let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
+                                            , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
+                                            , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
+                                 (boonIndex, g') = randomR (0, length allBoons - 1) g
+                                 newBoon = SimpleBoon (allBoons !! boonIndex) (enemyPos e)
+                             in (accEnemies, newBoon : accRewards, g')
+                           else (accEnemies ++ [e { eCurrentHealth = newHP }], accRewards, g)
+                      else (accEnemies ++ [e], accRewards, g)
+               ) ([], [], gen) allEnemies
 
-             dmg = statAttackDmg pStats
+           -- Update weapon and player
+           newW = w { lastAttack = t }
+           newP = p { currentWeapon = newW }
 
-             -- Apply damage and simple knockback to each enemy touched.
-             (updatedEnemies, _) = foldr
-               (\e (acc, _) ->
-                  let ep = enemyPos e
-                      dist = magnitude (subV ep hitCenter)
-                  in if dist <= swordRadius
-                       then
-                         let newHP = eCurrentHealth e - dmg
-                             -- knock enemy away from player
-                             (kx, ky) = normalize (subV ep (playerPos p))
-                             knockBackAmt = 12
-                             newPos = addV ep (scaleV knockBackAmt (kx, ky))
-                             newEnemy = e { eCurrentHealth = newHP, enemyPos = newPos }
-                         in if newHP <= 0 then (acc, ()) else (newEnemy : acc, ())
-                       else (e : acc, ())
-               ) ([], ()) allEnemies
-
-             -- Update lastAttack time on the weapon
-             newW = w { lastMeleeAttack = t }
-             newP = p { currentWeapon = newW }
-
-             newChamber = chamber { enemies = updatedEnemies }
-         in world { player = newP, currentRun = run { currentChamber = newChamber } }
-
+           newChamber = chamber { enemies = updatedEnemies, rewards = rewards chamber ++ newRewards }
+       in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }
 
 -- Checks if the player is trying to dash and manages dash state.
 handleDashing :: Float -> World -> PlayerStats -> World
@@ -795,28 +807,28 @@ handleCollisions world pStats =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
+      gen = rng world
       (playerProjs, enemyProjs) = partitionProjs (projectiles chamber)
       allEnemies = enemies chamber
 
-      -- 1. Check player projectiles against enemies
-      (survivingEnemies, hitProjs) = checkHits allEnemies playerProjs
+      -- Check player projectiles against enemies
+      (survivingEnemies, hitProjs, newRewards, gen') = checkHits gen allEnemies playerProjs
 
-      -- 2. Check enemy projectiles against player
-      (playerAfterHits, projsThatHitPlayer) =
-          checkPlayerHit p pStats enemyProjs
-
-      -- 3. Check enemies against player (Melee Damage)
-      -- (This is now handled by resolvePlayerEnemyCollisions,
-      --  but we could add melee damage logic there too)
+      -- Check enemy projectiles against player
+      (playerAfterHits, projsThatHitPlayer) = checkPlayerHit p pStats enemyProjs
 
       -- Filter out projectiles that hit something
       survivingPlayerProjs = filter (`notElem` hitProjs) playerProjs
       survivingEnemyProjs  = filter (`notElem` projsThatHitPlayer) enemyProjs
 
-      newChamber = chamber { enemies = survivingEnemies, projectiles = survivingPlayerProjs ++ survivingEnemyProjs }
+      -- Update chamber: new enemies, projectiles, and any rewards from kills
+      newChamber = chamber
+        { enemies = survivingEnemies
+        , projectiles = survivingPlayerProjs ++ survivingEnemyProjs
+        , rewards = rewards chamber ++ newRewards
+        }
 
-  in world { player = playerAfterHits, currentRun = run { currentChamber = newChamber } }
-
+  in world { player = playerAfterHits, currentRun = run { currentChamber = newChamber }, rng = gen' }
 
 -- Checks all enemy projectiles against the player
 -- Returns (updated Player, projectiles that hit)
@@ -842,33 +854,62 @@ checkPlayerHit p pStats enemyProjs =
 
 
 -- Checks all enemies against all player projectiles.
--- Returns (surviving enemies, projectiles that hit)
-checkHits :: [Enemy] -> [Projectile] -> ([Enemy], [Projectile])
-checkHits enemies projs =
-    foldl' applyProjectileToEnemies (enemies, []) projs
-
--- Helper for checkHits. Applies one projectile to a list of enemies.
-applyProjectileToEnemies :: ([Enemy], [Projectile]) -> Projectile -> ([Enemy], [Projectile])
-applyProjectileToEnemies (enemies, hitProjs) proj =
-    let (newEnemies, wasHit) = foldl' (checkHit proj) ([], False) enemies
-    in if wasHit
-       then (newEnemies, hitProjs ++ [proj])
-       else (newEnemies, hitProjs)
-
-
--- Helper for applyProjectileToEnemies. Checks one projectile against one enemy.
--- Returns (list of enemies to keep, bool if hit occurred)
-checkHit :: Projectile -> ([Enemy], Bool) -> Enemy -> ([Enemy], Bool)
-checkHit proj (survivors, alreadyHit) enemy
-    | alreadyHit    = (survivors ++ [enemy], True)
-    | not collision = (survivors ++ [enemy], False)
-    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True)
-    | otherwise     = (survivors, True)  -- enemy dies
+-- Returns (surviving enemies, projectiles that hit)-- 1️⃣ Single projectile vs single enemy
+-- Returns: (surviving enemies, whether projectile hit, new rewards, new RNG)
+checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
+checkHit gen proj (survivors, alreadyHit, rewards) enemy
+    | alreadyHit    = (survivors ++ [enemy], True, rewards, gen)
+    | not collision = (survivors ++ [enemy], False, rewards, gen)
+    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
+    | otherwise     =  -- Enemy dies: ALWAYS spawn a boon
+        let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
+                       , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
+                       , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
+            (boonIndex :: Int, gen2) = randomR (0, length allBoons - 1) gen
+            newBoon = allBoons !! boonIndex
+            newRewards = SimpleBoon newBoon (enemyPos enemy) : rewards
+        in (survivors, True, newRewards, gen2)
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
     newHealth = eCurrentHealth enemy - projDmg proj
 
+-- 2️⃣ Single projectile applied to all enemies
+applyProjectileToEnemies :: StdGen -> ([Enemy], [Projectile], [Reward]) -> Projectile -> ([Enemy], [Projectile], [Reward], StdGen)
+applyProjectileToEnemies gen (enemies, hitProjs, rewards) proj =
+    foldl applyOne ([], hitProjs, rewards, gen) enemies
+  where
+    applyOne (surv, hits, rws, g) enemy =
+      let (newSurv, wasHit, newRws, g') = checkHit g proj (surv, False, rws) enemy
+      in (newSurv, if wasHit then hits ++ [proj] else hits, newRws, g')
 
+-- 3️⃣ Apply all projectiles to all enemies
+checkHits :: StdGen -> [Enemy] -> [Projectile] -> ([Enemy], [Projectile], [Reward], StdGen)
+checkHits gen enemies projs =
+    foldl applyProj (enemies, [], [], gen) projs
+  where
+    applyProj (enemiesAcc, hitProjs, rewardsAcc, g) proj =
+      applyProjectileToEnemies g (enemiesAcc, hitProjs, rewardsAcc) proj
+
+  {-
+checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
+checkHit gen proj (survivors, alreadyHit, rewards) enemy
+    | alreadyHit    = (survivors ++ [enemy], True, rewards, gen)
+    | not collision = (survivors ++ [enemy], False, rewards, gen)
+    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
+    | otherwise     =  -- enemy dies, possibly spawn boon
+        let (r :: Float, gen1) = randomR (0.0, 1.0) gen
+            allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
+                       , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
+                       , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
+            (boonIndex :: Int, gen2) = randomR (0, length allBoons - 1) gen1
+            newRewards = if r <= 0.2
+                         then SimpleBoon (allBoons !! boonIndex) (enemyPos enemy) : rewards
+                         else rewards
+        in (survivors, True, newRewards, gen2)
+  where
+    collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
+    newHealth = eCurrentHealth enemy - projDmg proj
+-}
 
 
 -- Checks for player death and transitions state.
@@ -879,51 +920,41 @@ checkPlayerDeath world =
   else world
 
 
--- Checks if the room is cleared and spawns a reward.
+-- Marks the chamber as cleared if all enemies are dead
 checkRoomCleared :: World -> World
 checkRoomCleared world =
   let run = currentRun world
       chamber = currentChamber run
   in if not (isCleared chamber) && null (enemies chamber)
-     then -- Room was JUST cleared!
-          let (gen1, gen2) = split (rng world)
-              (newReward, _gen) = generateReward gen1
-              newChamber = chamber { isCleared = True, reward = Just newReward }
-              newRun = run { currentChamber = newChamber }
-          in world { currentRun = newRun, rng = gen2 }
-     else world -- Room not cleared, or already was
-
-
--- Generates a reward. For now, always the AttackSpeed boon.
-generateReward :: StdGen -> (Reward, StdGen)
-generateReward gen =
-  let boon = AttackSpeed 2 -- 2X attack speed increase
-      pos = (0, 100) -- Spawn near the center-top
-  in (SimpleBoon boon pos, gen) -- We pass 'gen' back, though it's unused here
+     then
+       let newChamber = chamber { isCleared = True }
+           newRun = run { currentChamber = newChamber }
+       in world { currentRun = newRun }
+     else world
 
 
 -- Handles player interaction (e.g., collecting rewards).
 handleInteraction :: World -> World
-handleInteraction world =
-  let k = keys world
-      p = player world
-      run = currentRun world
-      chamber = currentChamber run
-  in if keyInteract k && isCleared chamber
-     then -- Player is pressing interact in a cleared room
-          case reward chamber of
-            Nothing -> world -- No reward to collect
-            Just r  ->
-              let (rPos, rRad) = getRewardPosRad r
-              in if isColliding (playerPos p) playerRadius rPos rRad
-                 then -- Player is colliding with reward! Collect it.
-                      let world' = applyReward r world
-                          newChamber = chamber { reward = Nothing } -- Remove reward
-                          newRun = run { currentChamber = newChamber }
-                      in world' { currentRun = newRun }
-                 else world -- Pressing E but not on reward
-     else world -- Not pressing E
+handleInteraction world
+  | keyInteract (keys world) = world' { currentRun = newRun }
+  | otherwise                = world
+  where
+    p = player world
+    run = currentRun world
+    chamber = currentChamber run
+    playerPos' = playerPos p
+    radius = playerRadius
 
+    (collected, remaining) = partition isCollidingWithPlayer (rewards chamber)
+
+    world' = foldl (flip applyReward) world collected
+    newChamber = chamber { rewards = remaining }
+    newRun = run { currentChamber = newChamber }
+
+    isCollidingWithPlayer :: Reward -> Bool
+    isCollidingWithPlayer r =
+      let (rPos, rRad) = getRewardPosRad r
+      in isColliding playerPos' radius rPos rRad
 
 -- Helper to get position and radius from any Reward type.
 getRewardPosRad :: Reward -> ((Float, Float), Float)
