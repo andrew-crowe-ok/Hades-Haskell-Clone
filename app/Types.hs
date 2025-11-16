@@ -19,6 +19,7 @@ data World = World
   , currentRun   :: RunState
   , metaProgress :: MetaProgress
   , rng          :: StdGen
+  , enemySpawnTimer :: Float
   , keys         :: KeyState
   , worldTime    :: Float
   } deriving (Show)
@@ -94,6 +95,7 @@ data Enemy = Enemy
   , enemyType      :: EnemyType
   , aiState        :: AiState
   , enemyRadius    :: Float
+  , hitTimer       :: Float  
   } deriving (Show, Read)
 
 
@@ -129,6 +131,8 @@ data Weapon = Weapon
     , baseDmg        :: Int
     , baseAttackRate :: Float
     , lastAttack     :: Float
+    , lastMeleeAttack :: Float   -- For melee attacks
+
     } deriving (Show, Read)
 
 
@@ -143,6 +147,11 @@ data Boon
     | MoveSpeed Float
     | DmgResist Float
     | ExtraDash Int
+    | LongSword Int               -- +damage, longer melee range
+    | MultiShot Int               -- number of extra projectiles per shot
+    | RapidFire Float             -- multiply attack rate
+    | SniperShot Int Float        -- damage, maybe slightly slower projectile
+    | RotatingShield Float Float  -- shield radius, cooldown/regen time
     deriving (Show, Read)
 
 

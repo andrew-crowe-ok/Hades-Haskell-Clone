@@ -2,7 +2,7 @@ module Main where
 
 import Graphics.Gloss
 import Graphics.Gloss.Interface.Pure.Game hiding (KeyState)
-import System.Random ( StdGen, getStdGen, split )
+import System.Random ( StdGen, getStdGen, split, randomR )
 import Data.List (foldl', partition)
 import Data.Maybe (isJust)
 
@@ -33,6 +33,7 @@ initialWorld gen = World
   , currentRun   = initialRun
   , metaProgress = initialMeta
   , rng          = gen
+  , enemySpawnTimer = 3.0   -- first enemy appears after 3 seconds
   , keys         = initialKeyState
   , worldTime    = 0.0
   }
@@ -46,7 +47,7 @@ initialPlayer = Player
   , baseMaxHealth = 100
   , baseSpeed     = playerSpeed
   , baseDmgResist = 0.0
-  , currentWeapon = Weapon Sword 10 2.0 0.0 -- Sword, 10 dmg, 2 atks/sec
+  , currentWeapon = Weapon Sword 10 2.0 0.0 0.0-- Sword, 10 dmg, 2 atks/sec
   , currentBoons  = []
   , dashCount     = 3
   , dashCooldown  = 0
@@ -206,24 +207,43 @@ handlePausedInput _ world = world
 drawGame :: World -> Picture
 drawGame world = pictures
   [ drawRoom
-  , drawPlayer (player world)
+  , drawPlayer (player world) world
   , drawEnemies (enemies (currentChamber (currentRun world)))
   , drawProjectiles (projectiles (currentChamber (currentRun world)))
   , drawReward (reward (currentChamber (currentRun world)))
   , drawUI world
   ]
 
-
 drawRoom :: Picture
 drawRoom = color white $ rectangleWire roomWidth roomHeight
 
-
-drawPlayer :: Player -> Picture
-drawPlayer p =
+drawPlayer :: Player -> World -> Picture
+drawPlayer p world =
   let (x, y) = playerPos p
-      c = if isDashing p then cyan else red -- Flash cyan when dashing
-  in translate x y $ color c $ circleSolid playerRadius
+      c = if isDashing p then cyan else red
+  in pictures
+       [ translate x y $ color c $ circleSolid playerRadius
+       , drawSword p world
+       ]
 
+-- Draw the sword in front of the player if attacking
+drawSword :: Player -> World -> Picture
+drawSword p world =
+  let w = currentWeapon p
+      (px, py) = playerPos p
+      (fx, fy) = normalize (facingDir p)
+      swordLength = 20
+      swordWidth  = 3
+      angle = atan2 fy fx * 180 / pi
+      swordPic = color white $ rectangleSolid swordLength swordWidth
+      swordPos = (px + fx * (swordLength / 2 + playerRadius),
+                  py + fy * (swordLength / 2 + playerRadius))
+      cooldown = 1.0 / statAttackRate (calculateStats p)
+      t = worldTime world
+  in if weaponType w == Sword &&
+        (keyMelee (keys world) || (t - lastMeleeAttack w <= cooldown))
+     then translate (fst swordPos) (snd swordPos) $ rotate angle swordPic
+     else blank
 
 drawEnemies :: [Enemy] -> Picture
 drawEnemies es = pictures $ map drawEnemy es
@@ -383,9 +403,11 @@ updateGame dt world =
 
       -- 8. Resolve physics collisions (apply contact damage + knockback using stats)
       world7 = resolvePlayerEnemyCollisions pStats world6
+      
+      world7b = spawnMoreEnemies dt world7
 
       -- 9. Update AI and move non-player entities
-      world8 = updateAI dt world7
+      world8 = updateAI dt world7b
       world9 = moveEntities dt world8
 
       -- 10. Handle projectile hits and damage
@@ -496,7 +518,7 @@ handleMelee world pStats =
                ) ([], ()) allEnemies
 
              -- Update lastAttack time on the weapon
-             newW = w { lastAttack = t }
+             newW = w { lastMeleeAttack = t }
              newP = p { currentWeapon = newW }
 
              newChamber = chamber { enemies = updatedEnemies }
@@ -591,93 +613,112 @@ resolvePlayerEnemyCollisions pStats world =
       chamber = currentChamber (currentRun world)
       allEnemies = enemies chamber
 
-      -- The accumulator is (updated Player, list of resolved enemies)
+      -- Accumulator: (updated Player, list of resolved enemies)
+      -- foldl' + append in resolveOne preserves order
       (finalPlayer, resolvedEnemies) = foldl' (resolveOne pStats) (p, []) allEnemies
 
       newChamber = chamber { enemies = resolvedEnemies }
-  in world { player = finalPlayer, currentRun = (currentRun world) { currentChamber = newChamber } }
+      newRun     = (currentRun world) { currentChamber = newChamber }
+  in world { player = finalPlayer, currentRun = newRun }
 
 
--- Helper for the fold, resolves collision between player and one enemy
+-- Resolve collisions between all enemies in the chamber
+resolveEnemyCollisions :: [Enemy] -> [Enemy]
+resolveEnemyCollisions enemiesList = foldl resolveOne [] enemiesList
+  where
+    resolveOne :: [Enemy] -> Enemy -> [Enemy]
+    resolveOne resolved e =
+      let e' = foldl (pushApart) e resolved
+      in resolved ++ [e']
+
+    pushApart :: Enemy -> Enemy -> Enemy
+    pushApart e1 e2 =
+      let (x1, y1) = enemyPos e1
+          (x2, y2) = enemyPos e2
+          r1 = enemyRadius e1
+          r2 = enemyRadius e2
+          dx = x1 - x2
+          dy = y1 - y2
+          dist = sqrt (dx*dx + dy*dy) + 0.0001
+          overlap = (r1 + r2) - dist
+      in if overlap > 0
+         then
+           let pushX = (dx / dist) * (overlap / 2)
+               pushY = (dy / dist) * (overlap / 2)
+           in e1 { enemyPos = (x1 + pushX, y1 + pushY) }
+         else e1
+
 resolveOne :: PlayerStats -> (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
 resolveOne pStats (p, resolvedList) enemy =
   let (px, py) = playerPos p
       (ex, ey) = enemyPos enemy
       pRad     = playerRadius
       eRad     = enemyRadius enemy
-
-      vecX = px - ex
-      vecY = py - ey
-      dist = magnitude (vecX, vecY) + 0.0001
-      overlap = (pRad + eRad) - dist
-
-  in if overlap > 0 && not (isDashing p) -- Make player invulnerable while dashing
+      vecX     = px - ex
+      vecY     = py - ey
+      dist     = magnitude (vecX, vecY) + 0.0001
+      overlap  = (pRad + eRad) - dist
+  in if overlap > 0 && not (isDashing p)
      then
        let dirX = vecX / dist
            dirY = vecY / dist
            pushAmount = overlap / 2
-
            -- Push positions
            newPx = px + dirX * pushAmount
            newPy = py + dirY * pushAmount
-           -- Damage the player by enemy base damage, apply resist
+           -- Apply damage
            resist = statDmgResist pStats
-           rawDmg = eBaseDmg enemy
-           dmgTaken = round $ fromIntegral rawDmg * (1.0 - resist)
+           dmgTaken = round $ fromIntegral (eBaseDmg enemy) * (1 - resist)
            newHealth = currentHealth p - dmgTaken
-
-           -- Slight additional knockback to player (so they move away)
-           playerKnockStrength = 12
-           newPlayerPos = (newPx + dirX * playerKnockStrength, newPy + dirY * playerKnockStrength)
-
+           -- Extra knockback
+           knockback = 12
+           newPlayerPos = (newPx + dirX * knockback, newPy + dirY * knockback)
            newPlayer = p { playerPos = newPlayerPos, currentHealth = newHealth }
+           -- Move enemy away
+           newEnemy = enemy { enemyPos = (ex - dirX * pushAmount, ey - dirY * pushAmount) }
+       in (newPlayer, resolvedList ++ [newEnemy])  -- append to preserve original order
+     else (p, resolvedList ++ [enemy])
 
-           -- Move enemy away from player
-           newEx = ex - dirX * pushAmount
-           newEy = ey - dirY * pushAmount
-           newEnemy = enemy { enemyPos = (newEx, newEy) }
+spawnEnemy :: World -> World
+spawnEnemy world =
+  let run      = currentRun world
+      chamber  = currentChamber run
+      gen      = rng world
 
-       in (newPlayer, newEnemy : resolvedList)
+      (x, gen1) = randomR (-roomWidth/2 + 30, roomWidth/2 - 30) gen
+      (y, gen2) = randomR (-roomHeight/2 + 30, roomHeight/2 - 30) gen1
 
-     -- No overlap, or player is dashing
-     else (p, enemy : resolvedList)
+      existingEnemies = enemies chamber
+      enemyCount      = length existingEnemies
 
+      -- Difficulty scaling
+      hpBuff  = enemyCount * 5
+      dmgBuff = enemyCount `div` 2   -- +0.5 dmg every enemy
 
-{-
--- Helper for the fold, resolves collision between player and one enemy
-resolveOne :: (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
-resolveOne (p, resolvedList) enemy =
-  let (px, py) = playerPos p
-      (ex, ey) = enemyPos enemy
-      pRad     = playerRadius
-      eRad     = enemyRadius enemy
+      newEnemy =
+        initialEnemy
+          { enemyPos       = (x, y)
+          , eCurrentHealth = eBaseHealth initialEnemy + hpBuff
+          , eBaseHealth    = eBaseHealth initialEnemy + hpBuff
+          , eBaseDmg       = eBaseDmg initialEnemy + dmgBuff
+          }
 
-      vecX = px - ex
-      vecY = py - ey
-      dist = magnitude (vecX, vecY) + 0.0001
-      overlap = (pRad + eRad) - dist
+      updatedChamber = chamber { enemies = newEnemy : existingEnemies }
+      updatedRun     = run     { currentChamber = updatedChamber }
 
-  in if overlap > 0 && not (isDashing p) -- Make player invulnerable while dashing
-     -- Overlap! Push both player and enemy
-     then
-       let dirX = vecX / dist
-           dirY = vecY / dist
-           pushAmount = overlap / 2
+  in world
+      { currentRun      = updatedRun
+      , rng             = gen2
+      , enemySpawnTimer = 3.0
+      }
 
-           newPx = px + dirX * pushAmount
-           newPy = py + dirY * pushAmount
-           newPlayer = p { playerPos = (newPx, newPy) }
+spawnMoreEnemies :: Float -> World -> World
+spawnMoreEnemies dt world =
+  let timer = enemySpawnTimer world - dt
+  in if timer > 0
+       then world { enemySpawnTimer = timer }
+       else spawnEnemy world
 
-           newEx = ex - dirX * pushAmount
-           newEy = ey - dirY * pushAmount
-           newEnemy = enemy { enemyPos = (newEx, newEy) }
-
-       in (newPlayer, newEnemy : resolvedList)
-
-     -- No overlap, or player is dashing
-     else (p, enemy : resolvedList)
-
--}
 -- Update AI state for all enemies.
 updateAI :: Float -> World -> World
 updateAI dt world =
@@ -803,29 +844,31 @@ checkPlayerHit p pStats enemyProjs =
 -- Checks all enemies against all player projectiles.
 -- Returns (surviving enemies, projectiles that hit)
 checkHits :: [Enemy] -> [Projectile] -> ([Enemy], [Projectile])
-checkHits allEnemies = foldr applyProjectileToEnemies (allEnemies, [])
-
+checkHits enemies projs =
+    foldl' applyProjectileToEnemies (enemies, []) projs
 
 -- Helper for checkHits. Applies one projectile to a list of enemies.
-applyProjectileToEnemies :: Projectile -> ([Enemy], [Projectile]) -> ([Enemy], [Projectile])
-applyProjectileToEnemies proj (enemies, hitProjs) =
-  let (remainingEnemies, wasHit) = foldr (checkHit proj) ([], False) enemies
-  in if wasHit
-     then (remainingEnemies, proj : hitProjs) -- Add proj to hit list
-     else (remainingEnemies, hitProjs)       -- Proj didn't hit, keep it
+applyProjectileToEnemies :: ([Enemy], [Projectile]) -> Projectile -> ([Enemy], [Projectile])
+applyProjectileToEnemies (enemies, hitProjs) proj =
+    let (newEnemies, wasHit) = foldl' (checkHit proj) ([], False) enemies
+    in if wasHit
+       then (newEnemies, hitProjs ++ [proj])
+       else (newEnemies, hitProjs)
 
 
 -- Helper for applyProjectileToEnemies. Checks one projectile against one enemy.
 -- Returns (list of enemies to keep, bool if hit occurred)
-checkHit :: Projectile -> Enemy -> ([Enemy], Bool) -> ([Enemy], Bool)
-checkHit proj enemy (survivors, alreadyHit)
-    | alreadyHit    = (enemy : survivors, True)
-    | not collision = (enemy : survivors, False)
-    | newHealth > 0 = (enemy { eCurrentHealth = newHealth } : survivors, True) -- Hit! Enemy survives
-    | otherwise     = (survivors, True) -- Hit! Enemy dies
+checkHit :: Projectile -> ([Enemy], Bool) -> Enemy -> ([Enemy], Bool)
+checkHit proj (survivors, alreadyHit) enemy
+    | alreadyHit    = (survivors ++ [enemy], True)
+    | not collision = (survivors ++ [enemy], False)
+    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True)
+    | otherwise     = (survivors, True)  -- enemy dies
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
-    newHealth = eCurrentHealth enemy - projDmg proj -- Use currentHealth
+    newHealth = eCurrentHealth enemy - projDmg proj
+
+
 
 
 -- Checks for player death and transitions state.
