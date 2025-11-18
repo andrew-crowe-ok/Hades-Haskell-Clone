@@ -890,33 +890,21 @@ checkHits gen enemies projs =
     applyProj (enemiesAcc, hitProjs, rewardsAcc, g) proj =
       applyProjectileToEnemies g (enemiesAcc, hitProjs, rewardsAcc) proj
 
-  {-
-checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
-checkHit gen proj (survivors, alreadyHit, rewards) enemy
-    | alreadyHit    = (survivors ++ [enemy], True, rewards, gen)
-    | not collision = (survivors ++ [enemy], False, rewards, gen)
-    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
-    | otherwise     =  -- enemy dies, possibly spawn boon
-        let (r :: Float, gen1) = randomR (0.0, 1.0) gen
-            allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
-                       , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
-                       , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
-            (boonIndex :: Int, gen2) = randomR (0, length allBoons - 1) gen1
-            newRewards = if r <= 0.2
-                         then SimpleBoon (allBoons !! boonIndex) (enemyPos enemy) : rewards
-                         else rewards
-        in (survivors, True, newRewards, gen2)
-  where
-    collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
-    newHealth = eCurrentHealth enemy - projDmg proj
--}
-
 
 -- Checks for player death and transitions state.
 checkPlayerDeath :: World -> World
 checkPlayerDeath world =
   if currentHealth (player world) <= 0
-  then world { gameState = GameOver }
+  then world { 
+         gameState = GameOver,
+         player = (player world) { 
+             playerVel = (0,0), 
+             facingDir = (0,1), 
+             isDashing = False,
+             dashTimer = 0
+         },
+         keys = (keys world) { keyW = False, keyA = False, keyS = False, keyD = False }
+  }
   else world
 
 
