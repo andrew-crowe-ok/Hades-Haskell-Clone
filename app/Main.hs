@@ -35,6 +35,7 @@ initialWorld gen = World
   , rng          = gen
   , enemySpawnTimer = 3.0   -- first enemy appears after 3 seconds
   , keys         = initialKeyState
+  , mousePos = (0, 0)  -- start mouse at (0,0)
   , worldTime    = 0.0
   }
 
@@ -64,7 +65,7 @@ initialKeyState = KeyState
   , keyA        = False
   , keyS        = False
   , keyD        = False
-  , keyAttack   = False
+  , keyAttack   = False  
   , keyMelee    = False
   , keyDash     = False
   , keyInteract = False
@@ -231,7 +232,8 @@ drawSword :: Player -> World -> Picture
 drawSword p world =
   let w = currentWeapon p
       (px, py) = playerPos p
-      (fx, fy) = normalize (facingDir p)
+      (mx, my) = mousePos world               -- get mouse position
+      (fx, fy) = normalize (subV (mx, my) (px, py))  -- direction to mouse
       swordLength = 20
       swordWidth  = 3
       angle = atan2 fy fx * 180 / pi
@@ -321,6 +323,7 @@ drawUI world =
 
 -- Input handling for the 'Running' state.
 -- This function *only* updates the KeyState.
+-- Input handling for the 'Running' state
 handleRunningInput :: Event -> World -> World
 handleRunningInput event world =
   let k = keys world
@@ -330,27 +333,41 @@ handleRunningInput event world =
     EventKey (Char 'a') Down _ _ -> world { keys = k { keyA = True } }
     EventKey (Char 's') Down _ _ -> world { keys = k { keyS = True } }
     EventKey (Char 'd') Down _ _ -> world { keys = k { keyD = True } }
-    EventKey (Char 'f') Down _ _ -> world { keys = k { keyAttack = True } }
-    EventKey (Char 'g') Down _ _ -> world { keys = k { keyMelee = True } }
-    EventKey (Char 'g') Up   _ _ -> world { keys = k { keyMelee = False } }
     EventKey (SpecialKey KeySpace) Down _ _ -> world { keys = k { keyDash = True } }
     EventKey (Char 'e') Down _ _ -> world { keys = k { keyInteract = True } }
 
     -- Key releases
-    EventKey (Char 'w') Up   _ _ -> world { keys = k { keyW = False } }
-    EventKey (Char 'a') Up   _ _ -> world { keys = k { keyA = False } }
-    EventKey (Char 's') Up   _ _ -> world { keys = k { keyS = False } }
-    EventKey (Char 'd') Up   _ _ -> world { keys = k { keyD = False } }
-    EventKey (Char 'f') Up   _ _ -> world { keys = k { keyAttack = False } }
+    EventKey (Char 'w') Up _ _ -> world { keys = k { keyW = False } }
+    EventKey (Char 'a') Up _ _ -> world { keys = k { keyA = False } }
+    EventKey (Char 's') Up _ _ -> world { keys = k { keyS = False } }
+    EventKey (Char 'd') Up _ _ -> world { keys = k { keyD = False } }
     EventKey (SpecialKey KeySpace) Up _ _ -> world { keys = k { keyDash = False } }
-    EventKey (Char 'e') Up   _ _ -> world { keys = k { keyInteract = False } }
+    EventKey (Char 'e') Up _ _ -> world { keys = k { keyInteract = False } }
 
     -- Pause
     EventKey (SpecialKey KeyEnter) Down _ _ -> world { gameState = Paused }
 
+    -- Mouse presses
+    EventKey (MouseButton LeftButton) Down _ _ -> world { keys = k { keyAttack = True } }
+    EventKey (MouseButton LeftButton) Up _ _ -> world { keys = k { keyAttack = False } }
+    EventKey (MouseButton RightButton) Down _ _ -> world { keys = k { keyMelee = True } }
+    EventKey (MouseButton RightButton) Up _ _ -> world { keys = k { keyMelee = False } }
+
+    -- Mouse movement
+    EventMotion (mx, my) -> world { mousePos = (mx, my) }
+
     -- Default
     _ -> world
 
+updatePlayerFacing :: World -> World
+updatePlayerFacing world =
+  let p = player world
+      (px, py) = playerPos p
+      (mx, my) = mousePos world
+      dir = normalize (mx - px, my - py)
+      newPlayer = p { facingDir = dir }
+  in world { player = newPlayer }
+    
 
 -- --- STAT CALCULATION (Boon System) ---
 
@@ -392,52 +409,52 @@ applyBoon stats (ExtraDash val) =
 
 updateGame :: Float -> World -> World
 updateGame dt world =
-  let p = player world
+  let
+      -- 0. Update player facing to follow mouse
+      world0 = updatePlayerFacing world
 
-      -- 1. Calculate stats *once* at the beginning of the frame
-      pStats = calculateStats p
+      -- 1. Calculate stats
+      pStats = calculateStats (player world0)
 
       -- 2. Update player velocity based on key state
-      world1 = updatePlayerVelocity world pStats
+      world1 = updatePlayerVelocity world0 pStats
 
-      -- 3. Check for and execute ranged attacks (shooting)
-      world2 = handleAttacks world1 pStats
+      -- 3. Handle dashing
+      world2 = handleDashing dt world1 pStats
 
-      -- 4. Check for and execute melee attacks (sword 'g')
-      world3 = handleMelee world2 pStats
+      -- 4. Move player (apply dash & velocity)
+      world3 = movePlayer dt world2
 
-      -- 5. Check for and execute dashes (with cooldown)
-      world4 = handleDashing dt world3 pStats
+      -- 5. Handle shooting (projectiles)
+      world4 = handleAttacks world3 pStats
 
-      -- 6. Check for player interaction (collecting rewards)
-      world5 = handleInteraction world4
+      -- 6. Handle melee (sword)
+      world5 = handleMelee world4 pStats
 
-      -- 7. Move player (applying dash velocity if dashing)
-      world6 = movePlayer dt world5
+      -- 7. Handle interactions
+      world6 = handleInteraction world5
 
-      -- 8. Resolve physics collisions (apply contact damage + knockback using stats)
+      -- 8. Resolve collisions
       world7 = resolvePlayerEnemyCollisions pStats world6
-      
       world7b = spawnMoreEnemies dt world7
 
-      -- 9. Update AI and move non-player entities
+      -- 9. Update AI
       world8 = updateAI dt world7b
       world9 = moveEntities dt world8
 
-      -- 10. Handle projectile hits and damage
+      -- 10. Handle projectile collisions
       world10 = handleCollisions world9 pStats
 
-      -- 11. Check if room is cleared (and spawn reward)
+      -- 11. Check room cleared
       world11 = checkRoomCleared world10
 
-      -- 12. Cleanup projectiles
+      -- 12. Update projectiles
       world12 = updateProjectiles dt world11
 
-      -- 13. Check for player death
+      -- 13. Check player death
       finalWorld = checkPlayerDeath world12
 
   in finalWorld
-
 
 -- Calculates player velocity based on currently held keys and stats.
 updatePlayerVelocity :: World -> PlayerStats -> World
@@ -462,32 +479,42 @@ updatePlayerVelocity world pStats =
   in world { player = p { playerVel = newVel, facingDir = newFacing } }
 
 
--- Checks if the player is trying to attack and if the cooldown is ready.
+-- Handle ranged attack (projectile) using mouse left click
 handleAttacks :: World -> PlayerStats -> World
 handleAttacks world pStats =
   let p = player world
       w = currentWeapon p
       k = keys world
       t = worldTime world
-
-      -- Calculate time until next attack is ready
       cooldown = 1.0 / statAttackRate pStats
-      nextAttackTime = lastAttack w + cooldown
+      ready = t - lastAttack w >= cooldown
+  in if not (keyAttack k) || not ready || isDashing p
+     then world
+     else
+       let (px, py) = playerPos p
+           (mx, my) = mousePos world
+           (dirX, dirY) = normalize (subV (mx, my) (px, py))
+           (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
 
-  in if keyAttack k && t > nextAttackTime && not (isDashing p)
-     -- Cooldown is ready, key is pressed, and not dashing: ATTACK
-     then
-       let world' = spawnProjectile world pStats -- Pass stats for damage
-           -- Update the lastAttack time on the weapon
-           newWeapon = w { lastAttack = t }
-           newPlayer = p { currentWeapon = newWeapon }
-       in world' { player = newPlayer }
+           newProj = Projectile
+             { projPos    = (px + dirX * playerRadius, py + dirY * playerRadius)
+             , projVel    = (vx, vy)
+             , projDmg    = statAttackDmg pStats
+             , projSource = FromPlayer
+             , projRadius = projectileRadius
+             , projTTL    = projectileTTL
+             }
 
-     -- Either not attacking or on cooldown
-     else world
+           run = currentRun world
+           chamber = currentChamber run
+           newChamber = chamber { projectiles = newProj : projectiles chamber }
 
--- Handle melee (sword) attack using keyMelee ('g')
--- Damages enemies inside a short arc/box in front of the player.
+           newW = w { lastAttack = t }
+           newP = p { currentWeapon = newW }
+       in world { player = newP, currentRun = run { currentChamber = newChamber } }
+
+
+-- Handle melee (sword) attack using mouse right click
 handleMelee :: World -> PlayerStats -> World
 handleMelee world pStats =
   let p = player world
@@ -500,42 +527,41 @@ handleMelee world pStats =
      then world
      else
        let (px, py) = playerPos p
-           (fx, fy) = normalize (facingDir p)
+           (mx, my) = mousePos world
+           (fx, fy) = normalize (subV (mx, my) (px, py))
            swordRange = 40
            swordRadius = 36
            hitCenter = (px + fx * swordRange, py + fy * swordRange)
+
            run = currentRun world
            chamber = currentChamber run
            allEnemies = enemies chamber
            dmg = statAttackDmg pStats
            gen = rng world
 
-           -- Fold over enemies and apply damage, possibly spawn boons
            (updatedEnemies, newRewards, gen') =
              foldl
                (\(accEnemies, accRewards, g) e ->
-                   let dist = magnitude (subV (enemyPos e) hitCenter)
-                   in if dist <= swordRadius
-                      then
-                        let newHP = eCurrentHealth e - dmg
-                        in if newHP <= 0
-                           then
-                             let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
-                                            , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
-                                            , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
-                                 (boonIndex, g') = randomR (0, length allBoons - 1) g
-                                 newBoon = SimpleBoon (allBoons !! boonIndex) (enemyPos e)
-                             in (accEnemies, newBoon : accRewards, g')
-                           else (accEnemies ++ [e { eCurrentHealth = newHP }], accRewards, g)
-                      else (accEnemies ++ [e], accRewards, g)
+                  let dist = magnitude (subV (enemyPos e) hitCenter)
+                  in if dist <= swordRadius
+                     then
+                       let newHP = eCurrentHealth e - dmg
+                       in if newHP <= 0
+                          then
+                            let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
+                                           , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
+                                           , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
+                                (boonIndex, g') = randomR (0, length allBoons - 1) g
+                                newBoon = SimpleBoon (allBoons !! boonIndex) (enemyPos e)
+                            in (accEnemies, newBoon : accRewards, g')
+                          else (accEnemies ++ [e { eCurrentHealth = newHP }], accRewards, g)
+                     else (accEnemies ++ [e], accRewards, g)
                ) ([], [], gen) allEnemies
 
-           -- Update weapon and player
            newW = w { lastAttack = t }
            newP = p { currentWeapon = newW }
-
            newChamber = chamber { enemies = updatedEnemies, rewards = rewards chamber ++ newRewards }
-       in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }
+       in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }    
 
 -- Checks if the player is trying to dash and manages dash state.
 handleDashing :: Float -> World -> PlayerStats -> World
@@ -580,8 +606,8 @@ spawnProjectile world pStats =
       run     = currentRun world
       chamber = currentChamber run
       (px, py) = playerPos p
-      (fx, fy) = facingDir p
-      (dirX, dirY) = normalize (fx, fy)
+      (mx, my) = mousePos world        -- <- use mouse position directly
+      (dirX, dirY) = normalize (mx - px, my - py)
       (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
 
       newProj = Projectile
@@ -595,8 +621,6 @@ spawnProjectile world pStats =
 
       newChamber = chamber { projectiles = newProj : projectiles chamber }
   in world { currentRun = run { currentChamber = newChamber } }
-
-
 -- Update player position, applying smooth dash velocity
 movePlayer :: Float -> World -> World
 movePlayer dt world =

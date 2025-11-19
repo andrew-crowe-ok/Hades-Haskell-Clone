@@ -19,6 +19,7 @@ data World = World
   , currentRun   :: RunState
   , metaProgress :: MetaProgress
   , rng          :: StdGen
+  , mousePos :: (Float, Float)  -- store current mouse position
   , enemySpawnTimer :: Float
   , keys         :: KeyState
   , worldTime    :: Float
@@ -57,8 +58,8 @@ data KeyState = KeyState
     , keyA        :: Bool
     , keyS        :: Bool
     , keyD        :: Bool
-    , keyAttack   :: Bool
     , keyMelee    :: Bool
+    , keyAttack  :: Bool 
     , keyDash     :: Bool
     , keyInteract :: Bool
     } deriving (Show, Read)
