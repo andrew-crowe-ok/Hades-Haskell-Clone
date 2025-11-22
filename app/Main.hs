@@ -925,7 +925,7 @@ moveRangedTurret dt p e =
   let (px, py) = playerPos p
       (ex, ey) = enemyPos e
       (dirX, dirY) = normalize (px - ex, py - ey)
-      speedFactor = 0.3
+      speedFactor = 1.5
       newPos = (ex + dirX * eBaseSpeed e * speedFactor * dt,
                 ey + dirY * eBaseSpeed e * speedFactor * dt)
   in e { enemyPos = newPos }
@@ -935,47 +935,44 @@ moveShieldCharger :: Float -> Player -> Enemy -> Enemy
 moveShieldCharger dt p e =
   let (px, py) = playerPos p
       (ex, ey) = enemyPos e
-      vecToPlayer = subV (px, py) (ex, ey)
-      dist = magnitude vecToPlayer
-      dirToPlayer = normalize vecToPlayer
       baseSpeed = eBaseSpeed e
   in case aiState e of
 
        -- ---------------------- CHASING ----------------------
        Chasing ->
-         if dist < 150
-         then e { aiState = Charging
-                , chargeTimer = 0
-                , enemyFacingDir = dirToPlayer
-                }
-         else e { enemyPos = addV (ex, ey)
-                                (scaleV (baseSpeed * dt) dirToPlayer)
-                , enemyFacingDir = dirToPlayer
-                }
+         let vecToPlayer = normalize (subV (px, py) (ex, ey))
+         in if magnitude (subV (px, py) (ex, ey)) < 150
+            then e { aiState = Charging
+                   , chargeTimer = 0
+                   , enemyFacingDir = vecToPlayer  -- store direction at start of charge
+                   }
+            else e { enemyPos = addV (ex, ey) (scaleV (baseSpeed * dt) vecToPlayer)
+                   , enemyFacingDir = vecToPlayer
+                   }
 
        -- ---------------------- CHARGING ----------------------
        Charging ->
-         let moveSpeed = baseSpeed * 5
-             newPos = addV (ex, ey)
-                           (scaleV (moveSpeed * dt) dirToPlayer)
+         let dirToCharge = enemyFacingDir e       -- <-- use locked direction
+             moveSpeed = baseSpeed * 9
+             newPos = addV (ex, ey) (scaleV (moveSpeed * dt) dirToCharge)
              newTimer = chargeTimer e + dt
-         in if newTimer >= 3
+         in if newTimer >= 1
             then e { enemyPos = newPos
                    , aiState = Recovering
                    , chargeTimer = 0
                    }
             else e { enemyPos = newPos
                    , chargeTimer = newTimer
-                   , enemyFacingDir = dirToPlayer
+                   , enemyFacingDir = dirToCharge   -- keep locked
                    }
 
        -- ---------------------- RECOVERING ----------------------
        Recovering ->
-         let moveSpeed = baseSpeed * 0.5
-             newPos = addV (ex, ey)
-                           (scaleV (moveSpeed * dt) dirToPlayer)
+         let dirToPlayer = normalize (subV (px, py) (ex, ey))
+             moveSpeed = baseSpeed * 0.5
+             newPos = addV (ex, ey) (scaleV (moveSpeed * dt) dirToPlayer)
              newTimer = chargeTimer e + dt
-         in if newTimer >= 0.5
+         in if newTimer >= 2
             then e { aiState = Chasing
                    , chargeTimer = 0
                    }
@@ -1078,7 +1075,7 @@ fireAtPlayer world p e =
   let (ex, ey) = enemyPos e
       (px, py) = playerPos p
       (dirX, dirY) = normalize (px - ex, py - ey)
-      projectileSpeed = 100  -- slower!
+      projectileSpeed = 900  
       newProj = Projectile
         { projPos    = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
         , projVel    = (dirX * projectileSpeed, dirY * projectileSpeed)
