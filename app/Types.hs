@@ -95,13 +95,15 @@ data Enemy = Enemy
   , enemyType      :: EnemyType
   , aiState        :: AiState
   , enemyRadius    :: Float
-  , hitTimer       :: Float  
+  , fireTimer       :: Float       -- NEW: countdown to next shot
+  , hitTimer       :: Float      -- cooldown for attacks or hit invulnerability
+  , enemyFacingDir      :: (Float, Float)  -- needed for ShieldCharger
   } deriving (Show, Read)
-
 
 data EnemyType
     = MeleeBasic
-    | RangedTurrent
+    | RangedTurret
+    | ShieldCharger    -- Shield enemy, vulnerable from behind
     deriving (Show, Read, Eq)
 
 
@@ -109,7 +111,7 @@ data AiState
     = Idle
     | Chasing
     | Attacking
-    deriving (Show, Read)
+    deriving (Show, Read, Eq)
 
 
 data Projectile = Projectile

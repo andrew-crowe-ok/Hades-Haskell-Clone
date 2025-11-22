@@ -75,9 +75,9 @@ initialKeyState = KeyState
 initialRun :: RunState
 initialRun = RunState
   { currentChamber = Chamber
-      { enemies     = [initialEnemy]
+      { enemies     = [initialEnemy MeleeBasic (100, 200)]
       , projectiles = []
-      , rewards      = []       
+      , rewards     = []
       , isCleared   = False
       }
   , chamberLevel   = 1
@@ -85,31 +85,55 @@ initialRun = RunState
   }
 
 
+
 -- A lookup table for base enemy stats.
 -- Returns (baseHealth, baseSpeed, baseDamage, radius)
 baseEnemyStats :: EnemyType -> (Int, Float, Int, Float)
 baseEnemyStats MeleeBasic = (10, 100, 10, defaultEnemyRadius)
-baseEnemyStats RangedTurrent = (30, 0, 8, defaultEnemyRadius)
+baseEnemyStats RangedTurret = (30, 0, 8, defaultEnemyRadius)
 -- Add new enemy types here, e.g.:
 -- baseEnemyStats MeleeFast = (30, 150, 5, playerRadius)
 
 
 -- A single test enemy, built from the stat database.
-initialEnemy :: Enemy
-initialEnemy =
-  let eType = MeleeBasic
-      (health, speed, dmg, radius) = baseEnemyStats eType
-  in Enemy
-    { enemyPos      = (200, 200)
-    , eCurrentHealth = health
-    , eBaseHealth    = health
-    , eBaseSpeed     = speed
-    , eBaseDmg       = dmg
-    , enemyType     = eType
-    , aiState       = Idle
-    , enemyRadius   = radius
+initialEnemy :: EnemyType -> (Float, Float) -> Enemy
+initialEnemy et pos = case et of
+  MeleeBasic -> Enemy
+    { enemyPos       = pos
+    , eCurrentHealth = 10
+    , eBaseHealth    = 10
+    , eBaseSpeed     = 80
+    , eBaseDmg       = 2
+    , enemyType      = MeleeBasic
+    , aiState        = Idle
+    , enemyRadius    = 12
+    , hitTimer       = 0
+    , enemyFacingDir      = (0,1)
     }
-
+  RangedTurret -> Enemy
+    { enemyPos       = pos
+    , eCurrentHealth = 8
+    , eBaseHealth    = 8
+    , eBaseSpeed     = 50        -- slower than MeleeBasic
+    , eBaseDmg       = 3          -- damage per arrow
+    , enemyType      = RangedTurret
+    , aiState        = Idle
+    , enemyRadius    = 12
+    , hitTimer       = 4          -- starts ready to shoot every 4s
+    , enemyFacingDir      = (0,1)
+    }
+  ShieldCharger -> Enemy
+    { enemyPos       = pos
+    , eCurrentHealth = 20
+    , eBaseHealth    = 20
+    , eBaseSpeed     = 40         -- slow, but can charge
+    , eBaseDmg       = 4
+    , enemyType      = ShieldCharger
+    , aiState        = Idle
+    , enemyRadius    = 16
+    , hitTimer       = 0
+    , enemyFacingDir      = (0,1)      -- initial facing up
+    }
 
 
 initialMeta :: MetaProgress
@@ -248,18 +272,10 @@ drawSword p world =
      else blank
 
 drawEnemies :: [Enemy] -> Picture
-drawEnemies es = pictures $ map drawEnemy es
-
-
-drawEnemy :: Enemy -> Picture
-drawEnemy e =
-  let (x, y) = enemyPos e
-  in translate x y $ color chartreuse $ circleSolid (enemyRadius e)
-
+drawEnemies = Pictures . map drawEnemy
 
 drawProjectiles :: [Projectile] -> Picture
-drawProjectiles ps = pictures $ map drawProjectile ps
-
+drawProjectiles ps = Pictures $ map drawProjectile ps
 
 drawProjectile :: Projectile -> Picture
 drawProjectile p =
@@ -268,6 +284,38 @@ drawProjectile p =
                     FromPlayer -> cyan
                     FromEnemy  -> magenta
   in translate x y $ color projColor $ circleSolid (projRadius p)
+
+
+
+drawEnemy :: Enemy -> Picture
+drawEnemy e =
+  case enemyType e of
+
+    -- ---------------------- MeleeBasic ----------------------
+    MeleeBasic ->
+      let radius = enemyRadius e
+          circlePic = Color green $ circleSolid radius
+      in translateEx e circlePic
+
+    -- ---------------------- RangedTurret ----------------------
+    RangedTurret ->
+      let triangle = Color yellow $ polygon [(-10,-10),(10,-10),(0,10)]
+      in translateEx e triangle
+
+    -- ---------------------- ShieldCharger ----------------------
+    ShieldCharger ->
+      let size = enemyRadius e * 2
+          baseSquare = Color blue $ polygon [(-size,-size),(size,-size),(size,size),(-size,size)]
+      -- Red front indicator
+          frontHeight = size / 2
+          frontWidth  = size * 1.5
+          frontIndicator = Color red $ polygon [(-frontWidth/2,0),(frontWidth/2,0),(frontWidth/2,frontHeight),(-frontWidth/2,frontHeight)]
+      
+      -- Offset front indicator in front of enemy
+          shieldOffsetDist = enemyRadius e + frontHeight / 2
+          (dx, dy) = scaleV shieldOffsetDist (enemyFacingDir e)
+          positionedFront = translate (fst (enemyPos e) + dx) (snd (enemyPos e) + dy) frontIndicator
+      in translateEx e baseSquare <> positionedFront
 
 
 boonColor :: Boon -> Color
@@ -317,7 +365,10 @@ drawUI world =
     , clearedText
     ]
 
-
+translateEx :: Enemy -> Picture -> Picture
+translateEx e pic = translate x y pic
+  where
+    (x,y) = enemyPos e
 -- --- INPUT HANDLING (Game) ---
 
 
@@ -619,6 +670,7 @@ spawnProjectile world pStats =
         , projTTL    = projectileTTL
         }
 
+
       newChamber = chamber { projectiles = newProj : projectiles chamber }
   in world { currentRun = run { currentChamber = newChamber } }
 -- Update player position, applying smooth dash velocity
@@ -640,6 +692,25 @@ movePlayer dt world =
       clampedY = max (-halfRoomH) (min halfRoomH newY)
       newPlayer = p { playerPos = (clampedX, clampedY) }
   in world { player = newPlayer }
+
+
+spawnEnemyProjectile :: Enemy -> World -> World
+spawnEnemyProjectile e world =
+  let (ex, ey) = enemyPos e
+      pPos     = playerPos (player world)
+      (dirX, dirY) = normalize (subV pPos (ex, ey))
+      newProj = Projectile
+        { projPos    = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
+        , projVel    = (dirX * 200, dirY * 200)  -- projectile speed
+        , projDmg    = eBaseDmg e
+        , projSource = FromEnemy
+        , projRadius = 5
+        , projTTL    = 5
+        }
+      chamber = currentChamber (currentRun world)
+      run     = currentRun world
+      newChamber = chamber { projectiles = newProj : projectiles chamber }
+  in world { currentRun = run { currentChamber = newChamber } }
 
 
 -- This function now takes PlayerStats and the whole world and returns a new one
@@ -721,32 +792,61 @@ spawnEnemy world =
       chamber  = currentChamber run
       gen      = rng world
 
+      -- Random position within room bounds
       (x, gen1) = randomR (-roomWidth/2 + 30, roomWidth/2 - 30) gen
       (y, gen2) = randomR (-roomHeight/2 + 30, roomHeight/2 - 30) gen1
 
       existingEnemies = enemies chamber
       enemyCount      = length existingEnemies
 
-      -- Difficulty scaling
-      hpBuff  = enemyCount * 5
-      dmgBuff = enemyCount `div` 2   -- +0.5 dmg every enemy
+      -- Randomly pick enemy type
+      (etypeIndex, gen3) = randomR (0 :: Int, 2) gen2
+      enemyTypeChosen = case etypeIndex of
+        0 -> MeleeBasic
+        1 -> RangedTurret
+        2 -> ShieldCharger
+        _ -> MeleeBasic  -- fallback
 
-      newEnemy =
-        initialEnemy
-          { enemyPos       = (x, y)
-          , eCurrentHealth = eBaseHealth initialEnemy + hpBuff
-          , eBaseHealth    = eBaseHealth initialEnemy + hpBuff
-          , eBaseDmg       = eBaseDmg initialEnemy + dmgBuff
-          }
+      -- Base enemy (all start from initialEnemy template)
+      baseEnemy = initialEnemy enemyTypeChosen (100, 200)
+
+      -- Adjust stats based on type
+      newEnemy = case enemyTypeChosen of
+        MeleeBasic ->
+          baseEnemy
+            { enemyPos       = (x, y)
+            , eCurrentHealth = eBaseHealth baseEnemy + enemyCount * 5
+            , eBaseHealth    = eBaseHealth baseEnemy + enemyCount * 5
+            , eBaseDmg       = eBaseDmg baseEnemy + enemyCount `div` 2
+            , eBaseSpeed     = eBaseSpeed baseEnemy
+            }
+
+        RangedTurret ->
+          baseEnemy
+            { enemyPos       = (x, y)
+            , eCurrentHealth = 30 + enemyCount * 3
+            , eBaseHealth    = 30 + enemyCount * 3
+            , eBaseDmg       = 5 + enemyCount `div` 3
+            , eBaseSpeed     = eBaseSpeed baseEnemy * 0.7 -- slower
+            }
+
+        ShieldCharger ->
+          baseEnemy
+            { enemyPos       = (x, y)
+            , eCurrentHealth = 50 + enemyCount * 5
+            , eBaseHealth    = 50 + enemyCount * 5
+            , eBaseDmg       = 8 + enemyCount `div` 2
+            , eBaseSpeed     = eBaseSpeed baseEnemy * 0.5 -- slow
+            }
 
       updatedChamber = chamber { enemies = newEnemy : existingEnemies }
-      updatedRun     = run     { currentChamber = updatedChamber }
+      updatedRun     = run { currentChamber = updatedChamber }
 
   in world
-      { currentRun      = updatedRun
-      , rng             = gen2
-      , enemySpawnTimer = 3.0
-      }
+       { currentRun      = updatedRun
+       , rng             = gen3
+       , enemySpawnTimer = 3.0
+       }
 
 spawnMoreEnemies :: Float -> World -> World
 spawnMoreEnemies dt world =
@@ -755,23 +855,114 @@ spawnMoreEnemies dt world =
        then world { enemySpawnTimer = timer }
        else spawnEnemy world
 
--- Update AI state for all enemies.
+-- Update AI state for all enemies and handle attacks
 updateAI :: Float -> World -> World
 updateAI dt world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      newEnemies = map (updateEnemyAI p) (enemies chamber)
+
+      -- Process each enemy
+      (newEnemies, newWorld) = foldl (processEnemy dt p) ([], world) (enemies chamber)
+
       newChamber = chamber { enemies = newEnemies }
-  in world { currentRun = run { currentChamber = newChamber } }
+  in newWorld { currentRun = run { currentChamber = newChamber } }
+
+-- Process a single enemy for AI, movement, and attacks
+processEnemy :: Float -> Player -> ([Enemy], World) -> Enemy -> ([Enemy], World)
+processEnemy dt p (accEnemies, world) e =
+  let (updatedEnemy, world') = updateSingleEnemyAI dt p e world
+  in (accEnemies ++ [updatedEnemy], world')
+
+-- Update a single enemy
+updateSingleEnemyAI :: Float -> Player -> Enemy -> World -> (Enemy, World)
+updateSingleEnemyAI dt p e world =
+  case enemyType e of
+
+    -- ---------------------- Melee Basic ----------------------
+    MeleeBasic ->
+      let e'  = if aiState e == Idle then e { aiState = Chasing } else e
+          e'' = moveMeleeBasic dt p e'
+      in (e'', world)
+
+    -- ---------------------- Ranged Turret ----------------------
+    RangedTurret ->
+      let eAIUpdated = if aiState e == Idle then e { aiState = Chasing } else e
+          eMoved = moveRangedTurret dt p eAIUpdated
+          dirToPlayer = normalize $ subV (playerPos p) (enemyPos eMoved)
+          eFacing = eMoved { enemyFacingDir = dirToPlayer, hitTimer = hitTimer eMoved + dt }
+      in if hitTimer eFacing >= 4.0
+         then
+           let (eFired, world') = fireAtPlayer world p eFacing
+           in (eFired { hitTimer = 0 }, world')  -- fire and reset
+         else
+           (eFacing, world)
+
+    -- ---------------------- Shield Charger ----------------------
+    ShieldCharger ->
+      let dirToPlayer = normalize $ subV (playerPos p) (enemyPos e)
+          eAIUpdated = case aiState e of
+                         Idle    -> e { aiState = Chasing, enemyFacingDir = dirToPlayer }
+                         Chasing -> e { enemyFacingDir = dirToPlayer }
+                         _       -> e
+          eMoved = moveShieldCharger dt p eAIUpdated
+      in (eMoved, world)
+-- ---------------------- Movement Helpers ----------------------
+
+-- Melee Basic moves normally
+moveMeleeBasic :: Float -> Player -> Enemy -> Enemy
+moveMeleeBasic dt p e =
+  if aiState e == Chasing
+  then
+    let (px, py) = playerPos p
+        (ex, ey) = enemyPos e
+        (dirX, dirY) = normalize (px - ex, py - ey)
+        newPos = (ex + dirX * eBaseSpeed e * dt, ey + dirY * eBaseSpeed e * dt)
+    in e { enemyPos = newPos }
+  else e
+
+-- Ranged Turret moves slowly toward player
+moveRangedTurret :: Float -> Player -> Enemy -> Enemy
+moveRangedTurret dt p e =
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos e
+      (dirX, dirY) = normalize (px - ex, py - ey)
+      speedFactor = 0.3
+      newPos = (ex + dirX * eBaseSpeed e * speedFactor * dt,
+                ey + dirY * eBaseSpeed e * speedFactor * dt)
+  in e { enemyPos = newPos }
+
+-- Shield Charger movement (charges when close)
+moveShieldCharger :: Float -> Player -> Enemy -> Enemy
+moveShieldCharger dt p e =
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos e
+      vecToPlayer = subV (px, py) (ex, ey)
+      dist = magnitude vecToPlayer
+      dirToPlayer = normalize vecToPlayer
+      speed = eBaseSpeed e
+      moveSpeed = if dist < 150 then speed * 2 else speed
+      newPos = (ex + fst dirToPlayer * moveSpeed * dt, ey + snd dirToPlayer * moveSpeed * dt)
+  in e { enemyPos = newPos, enemyFacingDir = dirToPlayer }
 
 
--- Simple AI: If Idle, start Chasing the player.
+-- Update AI state for a single enemy
 updateEnemyAI :: Player -> Enemy -> Enemy
 updateEnemyAI p e =
-  case aiState e of
-    Idle -> e { aiState = Chasing }
-    _    -> e -- Keep chasing (or attacking, later)
+  case enemyType e of
+
+    MeleeBasic ->
+      case aiState e of
+        Idle -> e { aiState = Chasing }
+        _    -> e
+
+    RangedTurret ->
+      let e' = if aiState e == Idle then e { aiState = Chasing } else e
+      in e'  -- hitTimer increment handled in moveEnemy
+
+    ShieldCharger ->
+      -- Shield enemy always tries to rush
+      e { aiState = Chasing }
 
 
 -- Move all non-player entities.
@@ -780,29 +971,95 @@ moveEntities dt world =
   let p = player world
       run = currentRun world
       chamber = currentChamber run
-      newEnemies = map (moveEnemy dt p) (enemies chamber)
-      newProjs   = map (moveProjectile dt) (projectiles chamber)
-      newChamber = chamber { enemies = newEnemies, projectiles = newProjs }
-  in world { currentRun = run { currentChamber = newChamber } }
+
+      -- 1️⃣ Update all enemies (AI + movement + firing)
+      (updatedEnemies, worldAfterEnemyUpdates) =
+        foldl (\(accEnemies, w) e ->
+                 let (e', w') = updateSingleEnemyAI dt p e w
+                 in (accEnemies ++ [e'], w')
+              ) ([], world) (enemies chamber)
+
+      -- 2️⃣ Move all projectiles (use projectiles from updated world!)
+      newChamberAfterEnemyUpdates = currentChamber (currentRun worldAfterEnemyUpdates)
+      movedProjs = map (moveProjectile dt) (projectiles newChamberAfterEnemyUpdates)
+
+      -- 3️⃣ Update chamber with new enemies and moved projectiles
+      newChamber = newChamberAfterEnemyUpdates { enemies = updatedEnemies, projectiles = movedProjs }
+
+  in worldAfterEnemyUpdates { currentRun = run { currentChamber = newChamber } }
+
+handleTurretShoot :: Player -> ([Enemy], [Projectile]) -> Enemy -> ([Enemy], [Projectile])
+handleTurretShoot p (enemiesAcc, projsAcc) e@(Enemy { enemyType = RangedTurret, enemyPos = (ex, ey), eBaseDmg = dmg, hitTimer = ht }) =
+  if ht <= 0 then (e:enemiesAcc, projsAcc)
+  else
+    let (px, py) = playerPos p
+        (dirX, dirY) = normalize (px - ex, py - ey)
+        newProj = Projectile
+          { projPos = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
+          , projVel = (dirX * 200, dirY * 200)
+          , projDmg = dmg
+          , projSource = FromEnemy
+          , projRadius = 5
+          , projTTL = 5.0
+          }
+    in (e { hitTimer = 0 } : enemiesAcc, newProj : projsAcc)
+handleTurretShoot _ (enemiesAcc, projsAcc) e = (e : enemiesAcc, projsAcc)
 
 
 -- Move a single enemy.
+-- Move a single enemy based on type and AI state
 moveEnemy :: Float -> Player -> Enemy -> Enemy
 moveEnemy dt p e =
-  case aiState e of
-    Chasing ->
-      let (px, py) = playerPos p
-          (ex, ey) = enemyPos e
-          vecToPlayer = (px - ex, py - ey)
-          (dirX, dirY) = normalize vecToPlayer
+  let (px, py) = playerPos p
+      (ex, ey) = enemyPos e
+      vecToPlayer = (px - ex, py - ey)
+      (dirX, dirY) = normalize vecToPlayer
+      speed = eBaseSpeed e
+  in case enemyType e of
 
-          speed = eBaseSpeed e
+       MeleeBasic ->
+         if aiState e == Chasing
+         then e { enemyPos = (ex + dirX * speed * dt, ey + dirY * speed * dt) }
+         else e
 
-          newX = ex + dirX * speed * dt
-          newY = ey + dirY * speed * dt
-      in e { enemyPos = (newX, newY) }
-    _ -> e
+       RangedTurret ->
+         let newPos = (ex + dirX * speed * 0.3 * dt, ey + dirY * speed * 0.3 * dt) -- slow wandering
+             newHitTimer = hitTimer e + dt
+         in if newHitTimer >= 4.0
+            then e { hitTimer = 0, enemyPos = newPos }  -- fire projectile handled elsewhere
+            else e { hitTimer = newHitTimer, enemyPos = newPos }
 
+       ShieldCharger ->
+         -- Move straight toward player
+         e { enemyPos = (ex + dirX * speed * dt, ey + dirY * speed * dt) }
+         
+fireAtPlayer :: World -> Player -> Enemy -> (Enemy, World)
+fireAtPlayer world p e =
+  let (ex, ey) = enemyPos e
+      (px, py) = playerPos p
+      (dirX, dirY) = normalize (px - ex, py - ey)
+      projectileSpeed = 100  -- slower!
+      newProj = Projectile
+        { projPos    = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
+        , projVel    = (dirX * projectileSpeed, dirY * projectileSpeed)
+        , projDmg    = eBaseDmg e
+        , projSource = FromEnemy
+        , projRadius = 5
+        , projTTL    = 5.0
+        }
+      run = currentRun world
+      chamber = currentChamber run
+      newChamber = chamber { projectiles = newProj : projectiles chamber }
+      newRun = run { currentChamber = newChamber }
+  in (e, world { currentRun = newRun })
+
+isHitFromBehind :: Enemy -> (Float, Float) -> Bool
+isHitFromBehind e (px, py) =
+  let (ex, ey) = enemyPos e
+      enemyfacingDir = enemyFacingDir e           -- use the actual field
+      vecToPlayer = normalize (px - ex, py - ey)
+      dotProd = fst enemyfacingDir * fst vecToPlayer + snd enemyfacingDir * snd vecToPlayer
+  in dotProd < 0  -- True if player is behind
 
 -- Move a single projectile.
 moveProjectile :: Float -> Projectile -> Projectile
@@ -883,16 +1140,19 @@ checkPlayerHit p pStats enemyProjs =
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
     | alreadyHit    = (survivors ++ [enemy], True, rewards, gen)
+    | enemyType enemy == ShieldCharger && not (isHitFromBehind enemy (projPos proj)) =
+        (survivors ++ [enemy], False, rewards, gen)  -- ignore hits from front
     | not collision = (survivors ++ [enemy], False, rewards, gen)
     | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
-    | otherwise     =  -- Enemy dies: ALWAYS spawn a boon
-        let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
-                       , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
-                       , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
-            (boonIndex :: Int, gen2) = randomR (0, length allBoons - 1) gen
-            newBoon = allBoons !! boonIndex
-            newRewards = SimpleBoon newBoon (enemyPos enemy) : rewards
-        in (survivors, True, newRewards, gen2)
+    | otherwise     = -- Enemy dies
+        let allBoons = [AttackDmg 1, MoveSpeed 0.1, ExtraHealth 5]  -- replace with your actual boons
+        in if null allBoons
+           then (survivors, True, rewards, gen)  -- no boon to give
+           else
+             let (boonIndex, gen2) = randomR (0, length allBoons - 1) gen
+                 newBoon = allBoons !! boonIndex
+                 newRewards = SimpleBoon newBoon (enemyPos enemy) : rewards
+             in (survivors, True, newRewards, gen2)
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
     newHealth = eCurrentHealth enemy - projDmg proj
@@ -1001,6 +1261,7 @@ applyReward (BoonChoice _ _ _) world =
   world { gameState = BoonSelection } -- We'll implement this state later
 
 
+
 -- --- VECTOR MATH ---
 
 -- Simple circle collision check.
@@ -1037,3 +1298,9 @@ subV (ax,ay) (bx,by) = (ax-bx, ay-by)
 
 scaleV :: Float -> (Float,Float) -> (Float,Float)
 scaleV s (x,y) = (s*x, s*y)
+
+rotateVectorTo :: (Float, Float) -> Picture -> Picture
+rotateVectorTo (vx, vy) pic =
+  rotate angle pic
+  where
+    angle = atan2 vy vx * 180 / pi   -- Gloss uses degrees
