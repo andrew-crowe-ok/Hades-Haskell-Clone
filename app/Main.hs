@@ -754,37 +754,35 @@ resolveEnemyCollisions enemiesList = foldl resolveOne [] enemiesList
                pushY = (dy / dist) * (overlap / 2)
            in e1 { enemyPos = (x1 + pushX, y1 + pushY) }
          else e1
-
-resolveOne :: PlayerStats -> (Player, [Enemy]) -> Enemy -> (Player, [Enemy])
-resolveOne pStats (p, resolvedList) enemy =
+resolveOne pStats (p, acc) e =
   let (px, py) = playerPos p
-      (ex, ey) = enemyPos enemy
-      pRad     = playerRadius
-      eRad     = enemyRadius enemy
-      vecX     = px - ex
-      vecY     = py - ey
-      dist     = magnitude (vecX, vecY) + 0.0001
-      overlap  = (pRad + eRad) - dist
-  in if overlap > 0 && not (isDashing p)
-     then
-       let dirX = vecX / dist
-           dirY = vecY / dist
-           pushAmount = overlap / 2
-           -- Push positions
-           newPx = px + dirX * pushAmount
-           newPy = py + dirY * pushAmount
-           -- Apply damage
-           resist = statDmgResist pStats
-           dmgTaken = round $ fromIntegral (eBaseDmg enemy) * (1 - resist)
-           newHealth = currentHealth p - dmgTaken
-           -- Extra knockback
-           knockback = 12
-           newPlayerPos = (newPx + dirX * knockback, newPy + dirY * knockback)
-           newPlayer = p { playerPos = newPlayerPos, currentHealth = newHealth }
-           -- Move enemy away
-           newEnemy = enemy { enemyPos = (ex - dirX * pushAmount, ey - dirY * pushAmount) }
-       in (newPlayer, resolvedList ++ [newEnemy])  -- append to preserve original order
-     else (p, resolvedList ++ [enemy])
+      (ex, ey) = enemyPos e
+      collision = isColliding (px, py) 20 (ex, ey) (enemyRadius e)
+      dmg = eBaseDmg e
+      isFacingPlayer = not (isHitFromBehind e (px, py))
+  in
+  if not collision then
+      (p, acc ++ [e])
+
+  -- 🛡 ShieldCharger in Charging mode → deal damage always
+  else if enemyType e == ShieldCharger && aiState e == Charging then
+      let newHealth = currentHealth p - dmg
+          p' = p { currentHealth = newHealth }
+      in (p', acc ++ [e])
+
+  -- 🛡 ShieldCharger shield front blocks melee damage TO PLAYER?
+  else if enemyType e == ShieldCharger && isFacingPlayer then
+      -- shield is blocking, so player takes normal collision damage
+      let newHealth = currentHealth p - dmg
+          p' = p { currentHealth = newHealth }
+      in (p', acc ++ [e])
+
+  -- default: enemy deals touch damage
+  else
+      let newHealth = currentHealth p - dmg
+          p' = p { currentHealth = newHealth }
+      in (p', acc ++ [e])
+
 
 spawnEnemy :: World -> World
 spawnEnemy world =
@@ -940,11 +938,53 @@ moveShieldCharger dt p e =
       vecToPlayer = subV (px, py) (ex, ey)
       dist = magnitude vecToPlayer
       dirToPlayer = normalize vecToPlayer
-      speed = eBaseSpeed e
-      moveSpeed = if dist < 150 then speed * 2 else speed
-      newPos = (ex + fst dirToPlayer * moveSpeed * dt, ey + snd dirToPlayer * moveSpeed * dt)
-  in e { enemyPos = newPos, enemyFacingDir = dirToPlayer }
+      baseSpeed = eBaseSpeed e
+  in case aiState e of
 
+       -- ---------------------- CHASING ----------------------
+       Chasing ->
+         if dist < 150
+         then e { aiState = Charging
+                , chargeTimer = 0
+                , enemyFacingDir = dirToPlayer
+                }
+         else e { enemyPos = addV (ex, ey)
+                                (scaleV (baseSpeed * dt) dirToPlayer)
+                , enemyFacingDir = dirToPlayer
+                }
+
+       -- ---------------------- CHARGING ----------------------
+       Charging ->
+         let moveSpeed = baseSpeed * 5
+             newPos = addV (ex, ey)
+                           (scaleV (moveSpeed * dt) dirToPlayer)
+             newTimer = chargeTimer e + dt
+         in if newTimer >= 3
+            then e { enemyPos = newPos
+                   , aiState = Recovering
+                   , chargeTimer = 0
+                   }
+            else e { enemyPos = newPos
+                   , chargeTimer = newTimer
+                   , enemyFacingDir = dirToPlayer
+                   }
+
+       -- ---------------------- RECOVERING ----------------------
+       Recovering ->
+         let moveSpeed = baseSpeed * 0.5
+             newPos = addV (ex, ey)
+                           (scaleV (moveSpeed * dt) dirToPlayer)
+             newTimer = chargeTimer e + dt
+         in if newTimer >= 0.5
+            then e { aiState = Chasing
+                   , chargeTimer = 0
+                   }
+            else e { enemyPos = newPos
+                   , chargeTimer = newTimer
+                   , enemyFacingDir = dirToPlayer
+                   }
+
+       Idle -> e
 
 -- Update AI state for a single enemy
 updateEnemyAI :: Player -> Enemy -> Enemy
@@ -1053,6 +1093,13 @@ fireAtPlayer world p e =
       newRun = run { currentChamber = newChamber }
   in (e, world { currentRun = newRun })
 
+-- Checks if player is in front of the shield during a charge
+isFrontShielded :: Enemy -> Player -> Bool
+isFrontShielded e p =
+  enemyType e == ShieldCharger &&
+  aiState e == Charging &&
+  not (isHitFromBehind e (playerPos p))
+
 isHitFromBehind :: Enemy -> (Float, Float) -> Bool
 isHitFromBehind e (px, py) =
   let (ex, ey) = enemyPos e
@@ -1139,12 +1186,20 @@ checkPlayerHit p pStats enemyProjs =
 -- Returns: (surviving enemies, whether projectile hit, new rewards, new RNG)
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
-    | alreadyHit    = (survivors ++ [enemy], True, rewards, gen)
-    | enemyType enemy == ShieldCharger && not (isHitFromBehind enemy (projPos proj)) =
-        (survivors ++ [enemy], False, rewards, gen)  -- ignore hits from front
+    | alreadyHit = (survivors ++ [enemy], True, rewards, gen)
+
+    -- If it's a ShieldCharger currently charging and the projectile comes from the front,
+    -- ignore the hit (projectile does not damage the enemy).
+    | enemyType enemy == ShieldCharger
+      && aiState enemy == Charging
+      && not (isHitFromBehind enemy (projPos proj)) =
+        (survivors ++ [enemy], False, rewards, gen)
+
     | not collision = (survivors ++ [enemy], False, rewards, gen)
+
     | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
-    | otherwise     = -- Enemy dies
+
+    | otherwise = -- Enemy dies
         let allBoons = [AttackDmg 1, MoveSpeed 0.1, ExtraHealth 5]  -- replace with your actual boons
         in if null allBoons
            then (survivors, True, rewards, gen)  -- no boon to give

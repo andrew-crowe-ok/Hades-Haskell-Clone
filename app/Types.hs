@@ -94,6 +94,7 @@ data Enemy = Enemy
   , eBaseDmg       :: Int
   , enemyType      :: EnemyType
   , aiState        :: AiState
+  , chargeTimer    :: Float  
   , enemyRadius    :: Float
   , fireTimer       :: Float       -- NEW: countdown to next shot
   , hitTimer       :: Float      -- cooldown for attacks or hit invulnerability
@@ -110,6 +111,8 @@ data EnemyType
 data AiState
     = Idle
     | Chasing
+    | Charging 
+    | Recovering
     | Attacking
     deriving (Show, Read, Eq)
 
