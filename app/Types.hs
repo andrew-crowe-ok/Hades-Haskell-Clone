@@ -146,12 +146,12 @@ data WeaponType = Sword | Bow
 
 
 data Boon
-    = AttackDmg Int           -- General damage upgrade to both sword and projectiles
-    | AttackSpeed Float        -- faster shooting
-    | ExtraHealth Int       --  more health  (visual health reflects this.)
-    | MoveSpeed Float                 
-    | DmgResist Float           -- take less damage on hit
-    | ExtraDash Int
+    = AttackDmg Int           -- General damage upgrade to both sword and projectiles   --DONE
+    | AttackSpeed Float        -- faster shooting                                       --DONE
+    | ExtraHealth Int       --  more health  (visual health reflects this.)             --DONE
+    | MoveSpeed Float                                                                   --DONE
+    | DmgResist Float           -- take less damage on hit                              --
+    | ExtraDash Int                                                                     --
     | LongSword Int               -- +damage, longer melee range
     | MultiShot Int               -- number of extra projectiles per shot
     | RapidFire Float             -- low famage, medium speed 

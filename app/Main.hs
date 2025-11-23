@@ -426,49 +426,48 @@ updatePlayerFacing world =
 -- It takes the player and computes their final stats for this frame.
 calculateStats :: Player -> PlayerStats
 calculateStats p =
-  let w = currentWeapon p
-      -- 1️⃣ Start with the base stats from player and weapon
-      baseStats = PlayerStats
-        { statMaxHealth    = baseMaxHealth p
-        , statSpeed        = baseSpeed p
-        , statDmgResist    = baseDmgResist p
-        , statAttackDmg    = baseDmg w
-        , statAttackRate   = baseAttackRate w
-        , statDashCount    = maxDash
-        }
+    let w = currentWeapon p
 
-      -- 2️⃣ Fold over the boon list, applying each one in order
-      applyBoon stats boon = case boon of
-        AttackDmg n    -> stats { statAttackDmg = statAttackDmg stats + n }
-        AttackSpeed f  -> stats { statAttackRate = statAttackRate stats * (1 + f) }
-        ExtraHealth n  -> stats { statMaxHealth = statMaxHealth stats + n }
-        MoveSpeed f    -> stats { statSpeed = statSpeed stats * (1 + f) }
-        DmgResist f    -> stats { statDmgResist = statDmgResist stats + f }
-        ExtraDash n    -> stats { statDashCount = statDashCount stats + n }
-        LongSword n    -> stats { statAttackDmg = statAttackDmg stats + n }
-        MultiShot n    -> stats  -- handled in projectile system
-        RapidFire f    -> stats { statAttackRate = statAttackRate stats * (1 + f) }
-        SniperShot n _ -> stats { statAttackDmg = statAttackDmg stats + n }
-        RotatingShield _ _ -> stats  -- shield handled elsewhere
-  in foldl' applyBoon baseStats (currentBoons p)
+        -- 1️⃣ Start with the base stats from player and weapon
+        baseStats = PlayerStats
+            { statMaxHealth  = baseMaxHealth p
+            , statSpeed      = baseSpeed p
+            , statDmgResist  = baseDmgResist p
+            , statAttackDmg  = baseDmg w
+            , statAttackRate = baseAttackRate w
+            , statDashCount  = maxDash
+            }
+
+        -- 2️⃣ Fold over the boon list, applying each one in order
+        applyBoon stats boon = case boon of
+            AttackDmg n       -> stats { statAttackDmg  = statAttackDmg stats + n }
+            AttackSpeed f     -> stats { statAttackRate = statAttackRate stats * (1 + f) }
+            ExtraHealth n     -> stats { statMaxHealth  = statMaxHealth stats + n }
+            MoveSpeed f       -> stats { statSpeed       = statSpeed stats * (1 + f) }
+            DmgResist f       -> stats { statDmgResist  = min 0.9 (statDmgResist stats + f) }
+            ExtraDash n       -> stats { statDashCount  = statDashCount stats + n }
+            LongSword n       -> stats { statAttackDmg  = statAttackDmg stats + n }
+            MultiShot _       -> stats  -- handled in projectile system
+            RapidFire f       -> stats { statAttackRate = statAttackRate stats * (1 + f) }
+            SniperShot n _    -> stats { statAttackDmg  = statAttackDmg stats + n }
+            RotatingShield _ _ -> stats  -- shield handled elsewhere
+
+    in foldl' applyBoon baseStats (currentBoons p)
 
 -- Helper function to apply a single boon to the stats record.
 applyBoon :: PlayerStats -> Boon -> PlayerStats
 applyBoon stats (AttackDmg val) =
-  stats { statAttackDmg = statAttackDmg stats + val }
+    stats { statAttackDmg  = statAttackDmg stats + val }
 applyBoon stats (AttackSpeed modifier) =
-  stats { statAttackRate = statAttackRate stats * modifier }
+    stats { statAttackRate = statAttackRate stats * modifier }
 applyBoon stats (ExtraHealth val) =
-  stats { statMaxHealth = statMaxHealth stats + val }
+    stats { statMaxHealth  = statMaxHealth stats + val }
 applyBoon stats (MoveSpeed modifier) =
-  stats { statSpeed = statSpeed stats * modifier }
+    stats { statSpeed      = statSpeed stats * modifier }
 applyBoon stats (DmgResist val) =
-  -- Ensure resist cannot go above, say, 90%
-  stats { statDmgResist = min 0.9 (statDmgResist stats + val) }
+    stats { statDmgResist  = min 0.9 (statDmgResist stats + val) }
 applyBoon stats (ExtraDash val) =
-  stats { statDashCount = statDashCount stats + val }
-
-
+    stats { statDashCount  = statDashCount stats + val }
 -- --- UPDATE (Game) ---
 
 updateGame :: Float -> World -> World
@@ -1214,7 +1213,12 @@ checkHit gen proj (survivors, alreadyHit, rewards) enemy
   -- 5️⃣ Enemy dies
   | otherwise =
       let -- List of all possible boons to drop
-          allBoons = [ MoveSpeed 0.1, AttackSpeed 0.1]--{, ExtraHealth 20, AttackDmg 1--}]
+          allBoons = [ MoveSpeed 0.1
+                        , AttackSpeed 0.1
+                        , ExtraHealth 20
+                        , AttackDmg 1
+                        , DmgResist 0.1
+                        , ExtraDash 1]
 
           -- Randomly pick a boon
           (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
@@ -1318,32 +1322,36 @@ getRewardPosRad (BoonChoice _ _ _)       = ((0, 100), rewardRadius)  -- screen-c
 -- Applies the collected reward to the player.
 applyReward :: Reward -> World -> World
 applyReward (HealReward amt _) world =
-  let p = player world
-      pStats = calculateStats p
-      newHealth = min (statMaxHealth pStats) (currentHealth p + amt)
-  in world { player = p { currentHealth = newHealth } }
+    let p       = player world
+        pStats  = calculateStats p
+        newHealth = min (statMaxHealth pStats) (currentHealth p + amt)
+    in world { player = p { currentHealth = newHealth } }
 
 applyReward (SimpleBoon boon _) world =
-  let p = player world
-  in case boon of
-       ExtraHealth n ->
-         world { player = p { baseMaxHealth = baseMaxHealth p + n
-                            , currentBoons = boon : currentBoons p } }
-       MoveSpeed f ->
-         world { player = p { currentBoons = boon : currentBoons p } }
-       AttackSpeed f ->
-         world { player = p { currentBoons = boon : currentBoons p } }
-       _ ->
-         world { player = p { currentBoons = boon : currentBoons p } }
+    let p        = player world
+        newBoons = boon : currentBoons p
+        updatedPlayer = case boon of
+            ExtraHealth n ->
+                p { baseMaxHealth = baseMaxHealth p + n
+                  , currentBoons  = newBoons }
+            MoveSpeed _ ->
+                p { currentBoons = newBoons }
+            AttackSpeed _ ->
+                p { currentBoons = newBoons }
+            DmgResist _ ->
+                p { currentBoons = newBoons }  -- handled in calculateStats
+            ExtraDash _ ->
+                p { currentBoons = newBoons }  -- handled in calculateStats
+            _ ->
+                p { currentBoons = newBoons }
+    in world { player = updatedPlayer }
 
 applyReward (CurrencyReward amt _) world =
-  let run = currentRun world
-  in world { currentRun = run { runCurrency = runCurrency run + amt } }
+    let run = currentRun world
+    in world { currentRun = run { runCurrency = runCurrency run + amt } }
 
 applyReward (BoonChoice _ _ _) world =
-  world { gameState = BoonSelection }
-
-
+    world { gameState = BoonSelection }
 -- --- VECTOR MATH ---
 
 -- Simple circle collision check.
