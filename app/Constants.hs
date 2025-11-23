@@ -44,6 +44,12 @@ projectileTTL = 2.0 -- seconds
 dashSpeed :: Float
 dashSpeed = 400  -- faster than normal playerSpeed
 
+healthDropRadius :: Float
+healthDropRadius = 10     -- smaller heal pickup
+
+maxHealthBoonRadius :: Float
+maxHealthBoonRadius = 16  -- larger max health boon
+
 -- | Dash duration in seconds
 dashDuration :: Float
 dashDuration = 0.1

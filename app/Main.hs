@@ -319,17 +319,19 @@ drawEnemy e =
 
 
 boonColor :: Boon -> Color
-boonColor (AttackDmg _)       = red
-boonColor (AttackSpeed _)     = blue
-boonColor (ExtraHealth _)     = green
-boonColor (MoveSpeed _)       = yellow
-boonColor (DmgResist _)       = violet
-boonColor (ExtraDash _)       = orange
-boonColor (LongSword _)       = cyan
-boonColor (MultiShot _)       = magenta
-boonColor (RapidFire _)       = rose
-boonColor (SniperShot _ _)    = white
+boonColor (AttackDmg _)        = red
+boonColor (AttackSpeed _)      = blue
+boonColor (ExtraHealth _)      = green
+boonColor (MoveSpeed _)        = yellow
+boonColor (DmgResist _)        = violet
+boonColor (ExtraDash _)        = orange
+boonColor (LongSword _)        = cyan
+boonColor (MultiShot _)        = magenta
+boonColor (RapidFire _)        = rose
+boonColor (SniperShot _ _)     = white
 boonColor (RotatingShield _ _) = greyN 0.5
+boonColor _                     = white  -- fallback for future boons
+
 
 -- ADDED: Draws the reward on the ground, if it exists.
 -- Draw all rewards in the chamber
@@ -338,16 +340,14 @@ drawRewards = pictures . map drawSingleReward
 
 -- Draw a single reward with different colors per Boon type
 drawSingleReward :: Reward -> Picture
-drawSingleReward (HealReward _ (x, y)) =
-  translate x y $ color green $ circleSolid rewardRadius
-drawSingleReward (CurrencyReward _ (x, y)) =
-  translate x y $ color yellow $ circleSolid rewardRadius
-drawSingleReward (SimpleBoon b (x, y)) =
-  translate x y $ color (boonColor b) $ circleSolid rewardRadius
-drawSingleReward (BoonChoice _ _ _) =
-  translate 0 100 $ color (light orange) $ thickCircle rewardRadius 5
-
-
+drawSingleReward r =
+  let ((x, y), rad) = getRewardPosRad r
+      col = case r of
+              HealReward _ _       -> green
+              CurrencyReward _ _   -> yellow
+              SimpleBoon b _       -> boonColor b
+              BoonChoice _ _ _     -> light orange
+  in translate x y $ color col $ circleSolid rad
 
 drawUI :: World -> Picture
 drawUI world =
@@ -427,7 +427,7 @@ updatePlayerFacing world =
 calculateStats :: Player -> PlayerStats
 calculateStats p =
   let w = currentWeapon p
-      -- 1. Start with the base stats from player and weapon
+      -- 1️⃣ Start with the base stats from player and weapon
       baseStats = PlayerStats
         { statMaxHealth    = baseMaxHealth p
         , statSpeed        = baseSpeed p
@@ -436,7 +436,20 @@ calculateStats p =
         , statAttackRate   = baseAttackRate w
         , statDashCount    = maxDash
         }
-      -- 2. Fold over the boon list, applying each one in order
+
+      -- 2️⃣ Fold over the boon list, applying each one in order
+      applyBoon stats boon = case boon of
+        AttackDmg n    -> stats { statAttackDmg = statAttackDmg stats + n }
+        AttackSpeed f  -> stats { statAttackRate = statAttackRate stats * (1 + f) }
+        ExtraHealth n  -> stats { statMaxHealth = statMaxHealth stats + n }
+        MoveSpeed f    -> stats { statSpeed = statSpeed stats * (1 + f) }
+        DmgResist f    -> stats { statDmgResist = statDmgResist stats + f }
+        ExtraDash n    -> stats { statDashCount = statDashCount stats + n }
+        LongSword n    -> stats { statAttackDmg = statAttackDmg stats + n }
+        MultiShot n    -> stats  -- handled in projectile system
+        RapidFire f    -> stats { statAttackRate = statAttackRate stats * (1 + f) }
+        SniperShot n _ -> stats { statAttackDmg = statAttackDmg stats + n }
+        RotatingShield _ _ -> stats  -- shield handled elsewhere
   in foldl' applyBoon baseStats (currentBoons p)
 
 -- Helper function to apply a single boon to the stats record.
@@ -1181,30 +1194,37 @@ checkPlayerHit p pStats enemyProjs =
 -- Checks all enemies against all player projectiles.
 -- Returns (surviving enemies, projectiles that hit)-- 1️⃣ Single projectile vs single enemy
 -- Returns: (surviving enemies, whether projectile hit, new rewards, new RNG)
+
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
     | alreadyHit = (survivors ++ [enemy], True, rewards, gen)
-
-    -- If it's a ShieldCharger currently charging and the projectile comes from the front,
-    -- ignore the hit (projectile does not damage the enemy).
+    
+    -- ShieldCharger ignores frontal hits
     | enemyType enemy == ShieldCharger
       && aiState enemy == Charging
       && not (isHitFromBehind enemy (projPos proj)) =
         (survivors ++ [enemy], False, rewards, gen)
 
+    -- No collision
     | not collision = (survivors ++ [enemy], False, rewards, gen)
 
+    -- Enemy hit but still alive
     | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
 
-    | otherwise = -- Enemy dies
-        let allBoons = [AttackDmg 1, MoveSpeed 0.1, ExtraHealth 5]  -- replace with your actual boons
-        in if null allBoons
-           then (survivors, True, rewards, gen)  -- no boon to give
-           else
-             let (boonIndex, gen2) = randomR (0, length allBoons - 1) gen
-                 newBoon = allBoons !! boonIndex
-                 newRewards = SimpleBoon newBoon (enemyPos enemy) : rewards
-             in (survivors, True, newRewards, gen2)
+    -- Enemy dies
+    | otherwise =
+        let allBoons = [AttackDmg 1, MoveSpeed 0.1, ExtraHealth 20] -- list of possible boons
+            (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
+            newBoon = allBoons !! boonIndex
+
+            -- 30% chance for a health drop
+            (healthRoll, gen2) = randomR (0.0, 1.0 :: Float) gen1
+            healthReward = if healthRoll <= 0.3
+                           then [HealReward 15 (enemyPos enemy)]
+                           else []
+
+            newRewards = SimpleBoon newBoon (enemyPos enemy) : healthReward ++ rewards
+        in (survivors, True, newRewards, gen2)
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
     newHealth = eCurrentHealth enemy - projDmg proj
@@ -1256,62 +1276,64 @@ checkRoomCleared world =
        in world { currentRun = newRun }
      else world
 
-
--- Handles player interaction (e.g., collecting rewards).
+-- Handles player interaction (e.g., collecting rewards)
 handleInteraction :: World -> World
 handleInteraction world
-  | keyInteract (keys world) = world' { currentRun = newRun }
-  | otherwise                = world
+  | keyInteract (keys world) =
+      let p = player world
+          run = currentRun world
+          chamber = currentChamber run
+          playerPos' = playerPos p
+          radius = playerRadius
+
+          (collected, remaining) = partition isCollidingWithPlayer (rewards chamber)
+          world' = foldl (flip applyReward) world collected
+          newChamber = chamber { rewards = remaining }
+          newRun = run { currentChamber = newChamber }
+      in world' { currentRun = newRun }
+  | otherwise = world
   where
-    p = player world
-    run = currentRun world
-    chamber = currentChamber run
-    playerPos' = playerPos p
-    radius = playerRadius
-
-    (collected, remaining) = partition isCollidingWithPlayer (rewards chamber)
-
-    world' = foldl (flip applyReward) world collected
-    newChamber = chamber { rewards = remaining }
-    newRun = run { currentChamber = newChamber }
-
     isCollidingWithPlayer :: Reward -> Bool
     isCollidingWithPlayer r =
       let (rPos, rRad) = getRewardPosRad r
-      in isColliding playerPos' radius rPos rRad
+      in isColliding (playerPos (player world)) playerRadius rPos rRad
 
 -- Helper to get position and radius from any Reward type.
+
+-- Get position and radius of any reward
 getRewardPosRad :: Reward -> ((Float, Float), Float)
-getRewardPosRad (BoonChoice _ _ _) = ((0, 100), rewardRadius)
-getRewardPosRad (SimpleBoon _ pos)   = (pos, rewardRadius)
-getRewardPosRad (CurrencyReward _ pos) = (pos, rewardRadius)
-getRewardPosRad (BoonChoice _ _ _) = ((0, 100), rewardRadius)
+getRewardPosRad (HealReward _ pos)       = (pos, healthDropRadius)
+getRewardPosRad (SimpleBoon boon pos)    =
+  case boon of
+    ExtraHealth _ -> (pos, maxHealthBoonRadius)  -- bigger max health boon
+    _             -> (pos, rewardRadius)        -- default for other boons
+getRewardPosRad (CurrencyReward _ pos)   = (pos, rewardRadius)
+getRewardPosRad (BoonChoice _ _ _)       = ((0, 100), rewardRadius)  -- screen-centered
 
 
 -- Applies the collected reward to the player.
 applyReward :: Reward -> World -> World
 applyReward (HealReward amt _) world =
   let p = player world
-      pStats = calculateStats p
+      pStats = calculateStats p          -- calculates max health including ExtraHealth boons
       newHealth = min (statMaxHealth pStats) (currentHealth p + amt)
   in world { player = p { currentHealth = newHealth } }
 
-
 applyReward (SimpleBoon boon _) world =
   let p = player world
-      newBoons = boon : currentBoons p
-  in world { player = p { currentBoons = newBoons } }
-
+  in case boon of
+       ExtraHealth n ->
+         world { player = p { baseMaxHealth = baseMaxHealth p + n
+                            , currentBoons = boon : currentBoons p } }
+       _ ->
+         world { player = p { currentBoons = boon : currentBoons p } }
 
 applyReward (CurrencyReward amt _) world =
   let run = currentRun world
-      newCurrency = runCurrency run + amt
-  in world { currentRun = run { runCurrency = newCurrency } }
+  in world { currentRun = run { runCurrency = runCurrency run + amt } }
 
--- Handle BoonChoice by transitioning to a new state
 applyReward (BoonChoice _ _ _) world =
-  world { gameState = BoonSelection } -- We'll implement this state later
-
+  world { gameState = BoonSelection }
 
 
 -- --- VECTOR MATH ---
