@@ -319,18 +319,18 @@ drawEnemy e =
 
 
 boonColor :: Boon -> Color
-boonColor (AttackDmg _)        = red
-boonColor (AttackSpeed _)      = blue
-boonColor (ExtraHealth _)      = green
-boonColor (MoveSpeed _)        = yellow
-boonColor (DmgResist _)        = violet
-boonColor (ExtraDash _)        = orange
-boonColor (LongSword _)        = cyan
-boonColor (MultiShot _)        = magenta
-boonColor (RapidFire _)        = rose
-boonColor (SniperShot _ _)     = white
-boonColor (RotatingShield _ _) = greyN 0.5
-boonColor _                     = white  -- fallback for future boons
+boonColor boon = case boon of
+  AttackDmg _        -> red
+  AttackSpeed _      -> orange        -- new feature: bright orange
+  MoveSpeed _        -> blue          -- new feature: bright blue
+  ExtraHealth _      -> green
+  DmgResist _        -> violet
+  ExtraDash _        -> cyan
+  LongSword _        -> rose
+  MultiShot _        -> azure
+  RapidFire _        -> magenta
+  SniperShot _ _     -> chartreuse
+  RotatingShield _ _ -> greyN 0.5
 
 
 -- ADDED: Draws the reward on the ground, if it exists.
@@ -1194,37 +1194,41 @@ checkPlayerHit p pStats enemyProjs =
 -- Checks all enemies against all player projectiles.
 -- Returns (surviving enemies, projectiles that hit)-- 1️⃣ Single projectile vs single enemy
 -- Returns: (surviving enemies, whether projectile hit, new rewards, new RNG)
-
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
-    | alreadyHit = (survivors ++ [enemy], True, rewards, gen)
-    
-    -- ShieldCharger ignores frontal hits
-    | enemyType enemy == ShieldCharger
-      && aiState enemy == Charging
-      && not (isHitFromBehind enemy (projPos proj)) =
-        (survivors ++ [enemy], False, rewards, gen)
+  -- 1️⃣ Projectile already hit another enemy
+  | alreadyHit = (survivors ++ [enemy], True, rewards, gen)
 
-    -- No collision
-    | not collision = (survivors ++ [enemy], False, rewards, gen)
+  -- 2️⃣ ShieldCharger ignores frontal hits while charging
+  | enemyType enemy == ShieldCharger
+    && aiState enemy == Charging
+    && not (isHitFromBehind enemy (projPos proj)) =
+      (survivors ++ [enemy], False, rewards, gen)
 
-    -- Enemy hit but still alive
-    | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
+  -- 3️⃣ No collision
+  | not collision = (survivors ++ [enemy], False, rewards, gen)
 
-    -- Enemy dies
-    | otherwise =
-        let allBoons = [AttackDmg 1, MoveSpeed 0.1, ExtraHealth 20] -- list of possible boons
-            (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
-            newBoon = allBoons !! boonIndex
+  -- 4️⃣ Enemy hit but still alive
+  | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
 
-            -- 30% chance for a health drop
-            (healthRoll, gen2) = randomR (0.0, 1.0 :: Float) gen1
-            healthReward = if healthRoll <= 0.3
-                           then [HealReward 15 (enemyPos enemy)]
-                           else []
+  -- 5️⃣ Enemy dies
+  | otherwise =
+      let -- List of all possible boons to drop
+          allBoons = [ MoveSpeed 0.1, AttackSpeed 0.1]--{, ExtraHealth 20, AttackDmg 1--}]
 
-            newRewards = SimpleBoon newBoon (enemyPos enemy) : healthReward ++ rewards
-        in (survivors, True, newRewards, gen2)
+          -- Randomly pick a boon
+          (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
+          newBoon = allBoons !! boonIndex
+--{
+          -- 30% chance for a health drop
+          (healthRoll, gen2) = randomR (0.0, 1.0 :: Float) gen1
+          healthReward = if healthRoll <= 0.3
+                         then [HealReward 15 (enemyPos enemy)]
+                         else []
+--}
+          -- Combine rewards: boon + optional health
+          newRewards = SimpleBoon newBoon (enemyPos enemy) : healthReward ++ rewards
+      in (survivors, True, newRewards, gen2)
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
     newHealth = eCurrentHealth enemy - projDmg proj
@@ -1315,7 +1319,7 @@ getRewardPosRad (BoonChoice _ _ _)       = ((0, 100), rewardRadius)  -- screen-c
 applyReward :: Reward -> World -> World
 applyReward (HealReward amt _) world =
   let p = player world
-      pStats = calculateStats p          -- calculates max health including ExtraHealth boons
+      pStats = calculateStats p
       newHealth = min (statMaxHealth pStats) (currentHealth p + amt)
   in world { player = p { currentHealth = newHealth } }
 
@@ -1325,6 +1329,10 @@ applyReward (SimpleBoon boon _) world =
        ExtraHealth n ->
          world { player = p { baseMaxHealth = baseMaxHealth p + n
                             , currentBoons = boon : currentBoons p } }
+       MoveSpeed f ->
+         world { player = p { currentBoons = boon : currentBoons p } }
+       AttackSpeed f ->
+         world { player = p { currentBoons = boon : currentBoons p } }
        _ ->
          world { player = p { currentBoons = boon : currentBoons p } }
 
