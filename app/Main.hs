@@ -245,20 +245,22 @@ drawRoom = color white $ rectangleWire roomWidth roomHeight
 drawPlayer :: Player -> World -> Picture
 drawPlayer p world =
   let (x, y) = playerPos p
-      c = if isDashing p then cyan else red
+      c       = if isDashing p then cyan else red
+      pStats  = calculateStats p  -- ⚠ calculate PlayerStats here
   in pictures
        [ translate x y $ color c $ circleSolid playerRadius
-       , drawSword p world
+       , drawSword pStats p world  -- ⚠ pass PlayerStats, Player, World
        ]
 
+
 -- Draw the player's sword as a rectangle pointing toward the mouse
-drawSword :: Player -> World -> Picture
-drawSword p world
+
+drawSword :: PlayerStats -> Player -> World -> Picture
+drawSword pStats p world
   | not (keyMelee (keys world)) || isDashing p = Blank
   | otherwise =
       let (px, py) = playerPos p
           (mx, my) = mousePos world
-          -- Direction from player to mouse
           (dx, dy) = normalize (subV (mx, my) (px, py))
 
           -- Base sword size
@@ -267,20 +269,19 @@ drawSword p world
           swordWidth  = 8
 
           -- Add length for all LongSword boons
-          bonusLength = sum [fromIntegral n | LongSword n <- currentBoons p]
-          swordLength = baseLength + bonusLength
+          swordLength = baseLength + statSwordLength pStats
 
           -- Sword center is half of length along direction
           centerOffset = scaleV (swordLength / 2) (dx, dy)
           swordCenter = addV (px, py) centerOffset
 
-          -- Rotation in degrees (Gloss uses degrees)
+          -- Rotation in degrees
           angle = atan2 dy dx * 180 / pi
 
           -- Sword rectangle in white
           swordRect = color white $ rectangleSolid swordLength swordWidth
-
       in translate (fst swordCenter) (snd swordCenter) $ rotate angle swordRect
+
 
 
 drawEnemies :: [Enemy] -> Picture
@@ -439,47 +440,43 @@ updatePlayerFacing world =
 calculateStats :: Player -> PlayerStats
 calculateStats p =
     let w = currentWeapon p
-
         baseStats = PlayerStats
             { statMaxHealth  = baseMaxHealth p
             , statSpeed      = baseSpeed p
             , statDmgResist  = baseDmgResist p
             , statAttackDmg  = baseDmg w
             , statAttackRate = baseAttackRate w
-            , statDashCount  = maxDash
             , statSwordLength = 40        -- base sword length
+            , statDashCount  = maxDash
             }
 
         applyBoon stats boon = case boon of
-            AttackDmg n       -> stats { statAttackDmg  = statAttackDmg stats + n }
-            AttackSpeed f     -> stats { statAttackRate = statAttackRate stats * (1 + f) }
-            ExtraHealth n     -> stats { statMaxHealth  = statMaxHealth stats + n }
-            MoveSpeed f       -> stats { statSpeed       = statSpeed stats * (1 + f) }
-            DmgResist f       -> stats { statDmgResist  = min 0.9 (statDmgResist stats + f) }
-            ExtraDash n       -> stats { statDashCount  = statDashCount stats + n }
-            LongSword n       -> stats { statAttackDmg = statAttackDmg stats + n
-                                       , statSwordLength = statSwordLength stats + fromIntegral n * 10 } -- length increases per stack
-            MultiShot _       -> stats
-            RapidFire f       -> stats { statAttackRate = statAttackRate stats * (1 + f) }
-            SniperShot n _    -> stats { statAttackDmg  = statAttackDmg stats + n }
-            RotatingShield _ _ -> stats
+            AttackDmg n    -> stats { statAttackDmg   = statAttackDmg stats + n }
+            LongSword n    -> stats { statAttackDmg   = statAttackDmg stats + n
+                                    , statSwordLength = statSwordLength stats + fromIntegral n }
+            AttackSpeed f  -> stats { statAttackRate  = statAttackRate stats * (1 + f) }
+            ExtraHealth n  -> stats { statMaxHealth   = statMaxHealth stats + n }
+            MoveSpeed f    -> stats { statSpeed        = statSpeed stats * (1 + f) }
+            DmgResist f    -> stats { statDmgResist   = min 0.9 (statDmgResist stats + f) }
+            ExtraDash n    -> stats { statDashCount   = statDashCount stats + n }
+            _              -> stats  -- other boons ignored here
 
     in foldl' applyBoon baseStats (currentBoons p)
 
--- Helper function to apply a single boon to the stats record.
+
 applyBoon :: PlayerStats -> Boon -> PlayerStats
-applyBoon stats (AttackDmg val) =
-    stats { statAttackDmg  = statAttackDmg stats + val }
-applyBoon stats (AttackSpeed modifier) =
-    stats { statAttackRate = statAttackRate stats * modifier }
-applyBoon stats (ExtraHealth val) =
-    stats { statMaxHealth  = statMaxHealth stats + val }
-applyBoon stats (MoveSpeed modifier) =
-    stats { statSpeed      = statSpeed stats * modifier }
-applyBoon stats (DmgResist val) =
-    stats { statDmgResist  = min 0.9 (statDmgResist stats + val) }
-applyBoon stats (ExtraDash val) =
-    stats { statDashCount  = statDashCount stats + val }
+applyBoon stats (AttackDmg val) = stats { statAttackDmg = statAttackDmg stats + val }
+applyBoon stats (LongSword val) = stats { statAttackDmg = statAttackDmg stats + val
+                                        , statSwordLength = statSwordLength stats + fromIntegral val }
+applyBoon stats (AttackSpeed f) = stats { statAttackRate = statAttackRate stats * (1 + f) }
+applyBoon stats (ExtraHealth val) = stats { statMaxHealth = statMaxHealth stats + val }
+applyBoon stats (MoveSpeed f) = stats { statSpeed = statSpeed stats * (1 + f) }
+applyBoon stats (DmgResist f) = stats { statDmgResist = min 0.9 (statDmgResist stats + f) }
+applyBoon stats (ExtraDash val) = stats { statDashCount = statDashCount stats + val }
+applyBoon stats _ = stats
+
+
+
 -- --- UPDATE (Game) ---
 
 updateGame :: Float -> World -> World
@@ -590,6 +587,7 @@ handleAttacks world pStats =
 
 
 -- Handle melee (sword) attack using mouse right click
+
 handleMelee :: World -> PlayerStats -> World
 handleMelee world pStats =
   let p = player world
@@ -606,7 +604,7 @@ handleMelee world pStats =
            (fx, fy) = normalize (subV (mx, my) (px, py))
            swordRange = statSwordLength pStats
            swordRadius = 36
-           hitCenter = (px + fx * swordRange, py + fy * swordRange)
+           hitCenter = addV (px, py) (scaleV (0.5 * swordRange) (fx, fy)) -- stabbing motion
 
            run = currentRun world
            chamber = currentChamber run
@@ -636,7 +634,22 @@ handleMelee world pStats =
            newW = w { lastAttack = t }
            newP = p { currentWeapon = newW }
            newChamber = chamber { enemies = updatedEnemies, rewards = rewards chamber ++ newRewards }
-       in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }    
+       in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }
+
+
+
+
+
+swordDuration :: Float
+swordDuration = 0.15  -- seconds for stabbing animation
+
+currentSwordLength :: Player -> PlayerStats -> Float
+currentSwordLength p stats =
+    let t = swordTimer p
+        maxL = statSwordLength stats
+    in min maxL (maxL * (t / swordDuration))  -- linear growth
+
+
 
 -- Checks if the player is trying to dash and manages dash state.
 handleDashing :: Float -> World -> PlayerStats -> World
