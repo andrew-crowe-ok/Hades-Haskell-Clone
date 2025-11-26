@@ -37,6 +37,7 @@ data Player = Player
   , currentBoons     :: [Boon]
   , facingDir        :: (Float, Float)
   , dashCount        :: Int
+  , swordTimer       :: Float
   , dashCooldown     :: Float
   , dashTimer        :: Float
   , isDashing        :: Bool
@@ -49,6 +50,7 @@ data PlayerStats = PlayerStats
   , statDmgResist    :: Float
   , statAttackDmg    :: Int
   , statAttackRate   :: Float
+  , statSwordLength  :: Float
   , statDashCount    :: Int
   } deriving (Show, Read)
 
@@ -146,9 +148,9 @@ data WeaponType = Sword | Bow
 
 
 data Boon
-    = AttackDmg Int           -- General damage upgrade to both sword and projectiles   --DONE
+    = AttackDmg Int            -- General damage upgrade to both sword and projectiles   --DONE
     | AttackSpeed Float        -- faster shooting                                       --DONE
-    | ExtraHealth Int       --  more health  (visual health reflects this.)             --DONE
+    | ExtraHealth Int          --  more health  (visual health reflects this.)             --DONE
     | MoveSpeed Float                                                                   --DONE
     | DmgResist Float           -- take less damage on hit                              --
     | ExtraDash Int                                                                     --

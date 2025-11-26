@@ -251,25 +251,37 @@ drawPlayer p world =
        , drawSword p world
        ]
 
--- Draw the sword in front of the player if attacking
+-- Draw the player's sword as a rectangle pointing toward the mouse
 drawSword :: Player -> World -> Picture
-drawSword p world =
-  let w = currentWeapon p
-      (px, py) = playerPos p
-      (mx, my) = mousePos world               -- get mouse position
-      (fx, fy) = normalize (subV (mx, my) (px, py))  -- direction to mouse
-      swordLength = 20
-      swordWidth  = 3
-      angle = atan2 fy fx * 180 / pi
-      swordPic = color white $ rectangleSolid swordLength swordWidth
-      swordPos = (px + fx * (swordLength / 2 + playerRadius),
-                  py + fy * (swordLength / 2 + playerRadius))
-      cooldown = 1.0 / statAttackRate (calculateStats p)
-      t = worldTime world
-  in if weaponType w == Sword &&
-        (keyMelee (keys world) || (t - lastMeleeAttack w <= cooldown))
-     then translate (fst swordPos) (snd swordPos) $ rotate angle swordPic
-     else blank
+drawSword p world
+  | not (keyMelee (keys world)) || isDashing p = Blank
+  | otherwise =
+      let (px, py) = playerPos p
+          (mx, my) = mousePos world
+          -- Direction from player to mouse
+          (dx, dy) = normalize (subV (mx, my) (px, py))
+
+          -- Base sword size
+          baseLength, swordWidth :: Float
+          baseLength = 40
+          swordWidth  = 8
+
+          -- Add length for all LongSword boons
+          bonusLength = sum [fromIntegral n | LongSword n <- currentBoons p]
+          swordLength = baseLength + bonusLength
+
+          -- Sword center is half of length along direction
+          centerOffset = scaleV (swordLength / 2) (dx, dy)
+          swordCenter = addV (px, py) centerOffset
+
+          -- Rotation in degrees (Gloss uses degrees)
+          angle = atan2 dy dx * 180 / pi
+
+          -- Sword rectangle in white
+          swordRect = color white $ rectangleSolid swordLength swordWidth
+
+      in translate (fst swordCenter) (snd swordCenter) $ rotate angle swordRect
+
 
 drawEnemies :: [Enemy] -> Picture
 drawEnemies = Pictures . map drawEnemy
@@ -428,7 +440,6 @@ calculateStats :: Player -> PlayerStats
 calculateStats p =
     let w = currentWeapon p
 
-        -- 1️⃣ Start with the base stats from player and weapon
         baseStats = PlayerStats
             { statMaxHealth  = baseMaxHealth p
             , statSpeed      = baseSpeed p
@@ -436,9 +447,9 @@ calculateStats p =
             , statAttackDmg  = baseDmg w
             , statAttackRate = baseAttackRate w
             , statDashCount  = maxDash
+            , statSwordLength = 40        -- base sword length
             }
 
-        -- 2️⃣ Fold over the boon list, applying each one in order
         applyBoon stats boon = case boon of
             AttackDmg n       -> stats { statAttackDmg  = statAttackDmg stats + n }
             AttackSpeed f     -> stats { statAttackRate = statAttackRate stats * (1 + f) }
@@ -446,11 +457,12 @@ calculateStats p =
             MoveSpeed f       -> stats { statSpeed       = statSpeed stats * (1 + f) }
             DmgResist f       -> stats { statDmgResist  = min 0.9 (statDmgResist stats + f) }
             ExtraDash n       -> stats { statDashCount  = statDashCount stats + n }
-            LongSword n       -> stats { statAttackDmg  = statAttackDmg stats + n }
-            MultiShot _       -> stats  -- handled in projectile system
+            LongSword n       -> stats { statAttackDmg = statAttackDmg stats + n
+                                       , statSwordLength = statSwordLength stats + fromIntegral n * 10 } -- length increases per stack
+            MultiShot _       -> stats
             RapidFire f       -> stats { statAttackRate = statAttackRate stats * (1 + f) }
             SniperShot n _    -> stats { statAttackDmg  = statAttackDmg stats + n }
-            RotatingShield _ _ -> stats  -- shield handled elsewhere
+            RotatingShield _ _ -> stats
 
     in foldl' applyBoon baseStats (currentBoons p)
 
@@ -592,7 +604,7 @@ handleMelee world pStats =
        let (px, py) = playerPos p
            (mx, my) = mousePos world
            (fx, fy) = normalize (subV (mx, my) (px, py))
-           swordRange = 40
+           swordRange = statSwordLength pStats
            swordRadius = 36
            hitCenter = (px + fx * swordRange, py + fy * swordRange)
 
@@ -1213,12 +1225,13 @@ checkHit gen proj (survivors, alreadyHit, rewards) enemy
   -- 5️⃣ Enemy dies
   | otherwise =
       let -- List of all possible boons to drop
-          allBoons = [ MoveSpeed 0.1
-                        , AttackSpeed 0.1
-                        , ExtraHealth 20
-                        , AttackDmg 1
-                        , DmgResist 0.1
-                        , ExtraDash 1]
+          allBoons = --[ MoveSpeed 0.1
+                        --, AttackSpeed 0.1
+                        --, ExtraHealth 20
+                        [ LongSword 12 ]
+                        --, AttackDmg 1
+                        --, DmgResist 0.1
+                        --, ExtraDash 1]
 
           -- Randomly pick a boon
           (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
