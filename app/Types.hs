@@ -124,6 +124,7 @@ data Projectile = Projectile
     , projVel    :: (Float, Float)
     , projDmg    :: Int
     , projSource :: ProjectileSource
+    , projExplosive :: Maybe (Float, Int)  -- radius, damage
     , projRadius :: Float
     , projTTL    :: Float
     } deriving (Show, Read, Eq)
@@ -142,6 +143,15 @@ data Weapon = Weapon
 
     } deriving (Show, Read)
 
+data BoonSummary = BoonSummary
+  { bsMultiShotCount    :: Int
+  , bsRapidFireFactor   :: Float
+  , bsRapidFireDamageFactor :: Float
+  , bsSniperBonusDmg    :: Int
+  , bsSniperProjSpeed   :: Float
+  , bsSniperFirePenalty :: Float
+  , bsExplosive         :: Maybe (Float, Int) -- radius, damage
+  }
 
 data WeaponType = Sword | Bow
     deriving (Show, Read, Eq)
@@ -157,6 +167,7 @@ data Boon
     | LongSword Int               -- +damage, longer melee range
     | MultiShot Int               -- number of extra projectiles per shot
     | RapidFire Float             -- low famage, medium speed 
+    | ExplosiveShot Float Int
     | SniperShot Int Float        -- more damage, faster projectile
     | RotatingShield Float Float  -- shield radius, cooldown/regen time
     deriving (Show, Read)

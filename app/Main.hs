@@ -252,9 +252,7 @@ drawPlayer p world =
        , drawSword pStats p world  -- ⚠ pass PlayerStats, Player, World
        ]
 
-
 -- Draw the player's sword as a rectangle pointing toward the mouse
-
 drawSword :: PlayerStats -> Player -> World -> Picture
 drawSword pStats p world
   | not (keyMelee (keys world)) || isDashing p = Blank
@@ -263,25 +261,24 @@ drawSword pStats p world
           (mx, my) = mousePos world
           (dx, dy) = normalize (subV (mx, my) (px, py))
 
-          -- Base sword size
           baseLength, swordWidth :: Float
-          baseLength = 40
-          swordWidth  = 8
+          baseLength = 3
+          swordWidth  = 6
 
-          -- Add length for all LongSword boons
           swordLength = baseLength + statSwordLength pStats
 
-          -- Sword center is half of length along direction
-          centerOffset = scaleV (swordLength / 2) (dx, dy)
-          swordCenter = addV (px, py) centerOffset
+          -- Stab progress 0 to 1
+          stabProgress = min 1.0 ((worldTime world - lastAttack (currentWeapon p)) / 0.2)
 
-          -- Rotation in degrees
+          -- Shift rectangle so the base is at the player
+          swordOffset = scaleV (stabProgress * swordLength / 2) (dx, dy)
+          -- Move rectangle half its length forward so it looks like it grows from the player
+          swordCenter = addV (px, py) swordOffset
+
           angle = atan2 dy dx * 180 / pi
-
-          -- Sword rectangle in white
-          swordRect = color white $ rectangleSolid swordLength swordWidth
+          -- rectangleSolid is centered by default, so shift half its length forward
+          swordRect = translate (swordLength/2) 0 $ color white $ rectangleSolid swordLength swordWidth
       in translate (fst swordCenter) (snd swordCenter) $ rotate angle swordRect
-
 
 
 drawEnemies :: [Enemy] -> Picture
@@ -476,6 +473,26 @@ applyBoon stats (ExtraDash val) = stats { statDashCount = statDashCount stats + 
 applyBoon stats _ = stats
 
 
+gatherBoonEffects :: [Boon] -> BoonSummary
+gatherBoonEffects boons =
+    foldl addBoon defaultSummary boons
+  where
+    defaultSummary = BoonSummary 0 1.0 1.0 0 1.0 0.0 Nothing
+
+    addBoon s (MultiShot n) = s { bsMultiShotCount = bsMultiShotCount s + n }
+    addBoon s (RapidFire f) =
+        let df = max 0 (1.0 - 0.4 * f)
+        in s { bsRapidFireFactor = bsRapidFireFactor s * (1 + f)
+             , bsRapidFireDamageFactor = bsRapidFireDamageFactor s * df }
+    addBoon s (SniperShot dmg speedMul) =
+        s { bsSniperBonusDmg = bsSniperBonusDmg s + dmg
+          , bsSniperProjSpeed = bsSniperProjSpeed s * speedMul
+          , bsSniperFirePenalty = bsSniperFirePenalty s + (max 0 (speedMul - 1) * 0.5) }
+    addBoon s (ExplosiveShot radius dmg) = s { bsExplosive = Just (radius, dmg) }
+    addBoon s _ = s
+
+
+pp[][p][p]p[]p[]p[]p[]
 
 -- --- UPDATE (Game) ---
 
@@ -551,43 +568,74 @@ updatePlayerVelocity world pStats =
   in world { player = p { playerVel = newVel, facingDir = newFacing } }
 
 
--- Handle ranged attack (projectile) using mouse left click
+-- Handle ranged attacks (mouse left click)
 handleAttacks :: World -> PlayerStats -> World
 handleAttacks world pStats =
   let p = player world
       w = currentWeapon p
       k = keys world
       t = worldTime world
-      cooldown = 1.0 / statAttackRate pStats
-      ready = t - lastAttack w >= cooldown
-  in if not (keyAttack k) || not ready || isDashing p
-     then world
+
+      -- Cooldown calculation
+      baseCooldown = 1.0 / statAttackRate pStats
+      summary = gatherBoonEffects (currentBoons p)
+      effectiveRateMultiplier = bsRapidFireFactor summary
+      sniperPenalty = 1.0 + bsSniperFirePenalty summary
+      cooldown = baseCooldown / effectiveRateMultiplier * sniperPenalty
+      ready = keyAttack k && t - lastAttack w >= cooldown && not (isDashing p)
+
+  in if not ready then world
      else
        let (px, py) = playerPos p
            (mx, my) = mousePos world
-           (dirX, dirY) = normalize (subV (mx, my) (px, py))
-           (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
+           dir@(dx, dy) = normalize (subV (mx, my) (px, py))
 
-           newProj = Projectile
-             { projPos    = (px + dirX * playerRadius, py + dirY * playerRadius)
-             , projVel    = (vx, vy)
-             , projDmg    = statAttackDmg pStats
-             , projSource = FromPlayer
-             , projRadius = projectileRadius
-             , projTTL    = projectileTTL
-             }
+           -- Projectile stats
+           baseProjSpeed = projectileSpeed * bsSniperProjSpeed summary
+           baseDmgVal = statAttackDmg pStats
+           finalDmg = max 1 $ round $ fromIntegral baseDmgVal * bsRapidFireDamageFactor summary
+                                + fromIntegral (bsSniperBonusDmg summary)
 
+           -- Determine explosive info (Maybe (radius, dmg))
+           explosive = fmap (\(_r, _d) -> (30.0, finalDmg)) (bsExplosive summary)
+
+           -- Multi-shot calculation
+           totalShots = 1 + bsMultiShotCount summary
+           spacing = 8.0
+           perp = (-dy, dx)
+           indices = if totalShots == 1
+                     then [0]
+                     else let n = totalShots
+                              start = - (fromIntegral (n - 1) / 2)
+                          in [start, start + 1 .. start + fromIntegral (n - 1)]
+
+           -- Build each projectile
+           buildProj i =
+             let offset = scaleV (i * spacing) perp
+                 pos = addV (px, py) (scaleV playerRadius dir) `addV` offset
+                 vel = scaleV baseProjSpeed dir
+             in Projectile
+                  { projPos = pos
+                  , projVel = vel
+                  , projDmg = finalDmg
+                  , projSource = FromPlayer
+                  , projRadius = projectileRadius
+                  , projTTL = projectileTTL
+                  , projExplosive = explosive
+                  }
+
+           newProjs = map buildProj indices
+
+           -- Update chamber & player weapon cooldown
            run = currentRun world
            chamber = currentChamber run
-           newChamber = chamber { projectiles = newProj : projectiles chamber }
-
+           newChamber = chamber { projectiles = projectiles chamber ++ newProjs }
            newW = w { lastAttack = t }
            newP = p { currentWeapon = newW }
+
        in world { player = newP, currentRun = run { currentChamber = newChamber } }
 
-
 -- Handle melee (sword) attack using mouse right click
-
 handleMelee :: World -> PlayerStats -> World
 handleMelee world pStats =
   let p = player world
@@ -602,9 +650,11 @@ handleMelee world pStats =
        let (px, py) = playerPos p
            (mx, my) = mousePos world
            (fx, fy) = normalize (subV (mx, my) (px, py))
-           swordRange = statSwordLength pStats
-           swordRadius = 36
-           hitCenter = addV (px, py) (scaleV (0.5 * swordRange) (fx, fy)) -- stabbing motion
+           swordRange = statSwordLength pStats  -- ⚠ use sword length from PlayerStats
+           swordRadius = swordRange / 2         -- ⚠ hit radius scales with sword
+           -- Move hit center along stab direction for stabbing motion
+           stabProgress = min 1.0 ((worldTime world - lastAttack w) / 0.2) -- 0.2s stab
+           hitCenter = addV (px, py) (scaleV (stabProgress * swordRange) (fx, fy))
 
            run = currentRun world
            chamber = currentChamber run
@@ -621,9 +671,17 @@ handleMelee world pStats =
                        let newHP = eCurrentHealth e - dmg
                        in if newHP <= 0
                           then
-                            let allBoons = [ AttackDmg 1, AttackSpeed 1.2, ExtraHealth 10, MoveSpeed 0.5
-                                           , DmgResist 0.1, ExtraDash 1, LongSword 1, MultiShot 1
-                                           , RapidFire 0.5, SniperShot 2 1.5, RotatingShield 30 5 ]
+                            let allBoons = -- [ --AttackDmg 1
+                                            --, AttackSpeed 1.2
+                                            --, ExtraHealth 10
+                                            --, MoveSpeed 0.5
+                                            --, DmgResist 0.1
+                                            --, ExtraDash 1
+                                            --,LongSword 1
+                                            -- MultiShot 1 ]
+                                            --, RapidFire 0.5
+                                              [ExplosiveShot 30.0 10 ]
+                                            --, RotatingShield 30 5 ]
                                 (boonIndex, g') = randomR (0, length allBoons - 1) g
                                 newBoon = SimpleBoon (allBoons !! boonIndex) (enemyPos e)
                             in (accEnemies, newBoon : accRewards, g')
@@ -635,6 +693,7 @@ handleMelee world pStats =
            newP = p { currentWeapon = newW }
            newChamber = chamber { enemies = updatedEnemies, rewards = rewards chamber ++ newRewards }
        in world { player = newP, currentRun = run { currentChamber = newChamber }, rng = gen' }
+
 
 
 
@@ -687,29 +746,28 @@ handleDashing dt world pStats =
   in world { player = newPlayer }
 
 
--- Creates a projectile originating from the player.
-spawnProjectile :: World -> PlayerStats -> World
-spawnProjectile world pStats =
-  let p       = player world
-      run     = currentRun world
-      chamber = currentChamber run
-      (px, py) = playerPos p
-      (mx, my) = mousePos world        -- <- use mouse position directly
-      (dirX, dirY) = normalize (mx - px, my - py)
-      (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
+-- Spawn a single projectile from the player
+spawnProjectile :: World -> PlayerStats -> Maybe (Float, Int) -> World
+spawnProjectile world pStats explosive =
+    let p       = player world
+        run     = currentRun world
+        chamber = currentChamber run
+        (px, py) = playerPos p
+        (mx, my) = mousePos world
+        (dirX, dirY) = normalize (mx - px, my - py)
+        (vx, vy) = (dirX * projectileSpeed, dirY * projectileSpeed)
+        newProj = Projectile
+            { projPos      = (px + dirX * playerRadius, py + dirY * playerRadius)
+            , projVel      = (vx, vy)
+            , projDmg      = statAttackDmg pStats
+            , projSource   = FromPlayer
+            , projRadius   = projectileRadius
+            , projTTL      = projectileTTL
+            , projExplosive = explosive
+            }
+        newChamber = chamber { projectiles = projectiles chamber ++ [newProj] }
+    in world { currentRun = run { currentChamber = newChamber } }
 
-      newProj = Projectile
-        { projPos    = (px + dirX * playerRadius, py + dirY * playerRadius)
-        , projVel    = (vx, vy)
-        , projDmg    = statAttackDmg pStats
-        , projSource = FromPlayer
-        , projRadius = projectileRadius
-        , projTTL    = projectileTTL
-        }
-
-
-      newChamber = chamber { projectiles = newProj : projectiles chamber }
-  in world { currentRun = run { currentChamber = newChamber } }
 -- Update player position, applying smooth dash velocity
 movePlayer :: Float -> World -> World
 movePlayer dt world =
@@ -1214,59 +1272,65 @@ checkPlayerHit p pStats enemyProjs =
            else -- No hit
              (player, hitProjs)
 
-
--- Checks all enemies against all player projectiles.
--- Returns (surviving enemies, projectiles that hit)-- 1️⃣ Single projectile vs single enemy
--- Returns: (surviving enemies, whether projectile hit, new rewards, new RNG)
+-- Checks a single enemy against a single projectile
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
-  -- 1️⃣ Projectile already hit another enemy
+  -- Projectile already hit another enemy
   | alreadyHit = (survivors ++ [enemy], True, rewards, gen)
 
-  -- 2️⃣ ShieldCharger ignores frontal hits while charging
+  -- ShieldCharger ignores frontal hits while charging
   | enemyType enemy == ShieldCharger
     && aiState enemy == Charging
     && not (isHitFromBehind enemy (projPos proj)) =
       (survivors ++ [enemy], False, rewards, gen)
 
-  -- 3️⃣ No collision
+  -- No collision
   | not collision = (survivors ++ [enemy], False, rewards, gen)
 
-  -- 4️⃣ Enemy hit but still alive
+  -- Enemy hit but still alive
   | newHealth > 0 = (survivors ++ [enemy { eCurrentHealth = newHealth }], True, rewards, gen)
 
-  -- 5️⃣ Enemy dies
+  -- Enemy dies from a normal projectile
   | otherwise =
-      let -- List of all possible boons to drop
-          allBoons = --[ MoveSpeed 0.1
-                        --, AttackSpeed 0.1
-                        --, ExtraHealth 20
-                        [ LongSword 12 ]
-                        --, AttackDmg 1
-                        --, DmgResist 0.1
-                        --, ExtraDash 1]
-
-          -- Randomly pick a boon
+      let allBoons = [ LongSword 12, MultiShot 1, RapidFire 0.5, SniperShot 2 1.5, ExplosiveShot 30.0 10 ]
           (boonIndex, gen1) = randomR (0, length allBoons - 1) gen
           newBoon = allBoons !! boonIndex
---{
-          -- 30% chance for a health drop
           (healthRoll, gen2) = randomR (0.0, 1.0 :: Float) gen1
-          healthReward = if healthRoll <= 0.3
-                         then [HealReward 15 (enemyPos enemy)]
-                         else []
---}
-          -- Combine rewards: boon + optional health
+          healthReward = if healthRoll <= 0.3 then [HealReward 15 (enemyPos enemy)] else []
           newRewards = SimpleBoon newBoon (enemyPos enemy) : healthReward ++ rewards
       in (survivors, True, newRewards, gen2)
   where
     collision = isColliding (projPos proj) (projRadius proj) (enemyPos enemy) (enemyRadius enemy)
     newHealth = eCurrentHealth enemy - projDmg proj
 
--- 2️⃣ Single projectile applied to all enemies
+
+-- Apply a single projectile to all enemies
 applyProjectileToEnemies :: StdGen -> ([Enemy], [Projectile], [Reward]) -> Projectile -> ([Enemy], [Projectile], [Reward], StdGen)
 applyProjectileToEnemies gen (enemies, hitProjs, rewards) proj =
-    foldl applyOne ([], hitProjs, rewards, gen) enemies
+    case projExplosive proj of
+      -- Explosive projectile: hit all enemies in radius
+      Just (radius, dmg) ->
+        let (hitEnemies, safeEnemies) = partition (\e ->
+                let dist = magnitude (subV (projPos proj) (enemyPos e))
+                in dist <= radius + enemyRadius e
+             ) enemies
+            (updatedEnemies, newRewards, gen') =
+                foldl (\(accEnemies, accRewards, g) e ->
+                        let newHP = eCurrentHealth e - dmg
+                        in if newHP <= 0
+                           then
+                             -- On death, drop a random boon from a safe list
+                             let allBoons = [ LongSword 12, MultiShot 1, RapidFire 0.5, SniperShot 2 1.5 ]
+                                 (boonIndex, g') = randomR (0, length allBoons - 1) g
+                                 newBoon = SimpleBoon (allBoons !! boonIndex) (enemyPos e)
+                             in (accEnemies, newBoon : accRewards, g')
+                           else (accEnemies ++ [e { eCurrentHealth = newHP }], accRewards, g)
+                    ) (safeEnemies, rewards, gen) hitEnemies
+        in (updatedEnemies, hitProjs ++ [proj], newRewards, gen')
+
+      -- Normal projectile: single target
+      Nothing ->
+        foldl applyOne ([], hitProjs, rewards, gen) enemies
   where
     applyOne (surv, hits, rws, g) enemy =
       let (newSurv, wasHit, newRws, g') = checkHit g proj (surv, False, rws) enemy
@@ -1357,19 +1421,18 @@ applyReward (SimpleBoon boon _) world =
     let p        = player world
         newBoons = boon : currentBoons p
         updatedPlayer = case boon of
-            ExtraHealth n ->
-                p { baseMaxHealth = baseMaxHealth p + n
-                  , currentBoons  = newBoons }
-            MoveSpeed _ ->
-                p { currentBoons = newBoons }
-            AttackSpeed _ ->
-                p { currentBoons = newBoons }
-            DmgResist _ ->
-                p { currentBoons = newBoons }  -- handled in calculateStats
-            ExtraDash _ ->
-                p { currentBoons = newBoons }  -- handled in calculateStats
-            _ ->
-                p { currentBoons = newBoons }
+            ExtraHealth n      -> p { baseMaxHealth = baseMaxHealth p + n
+                                    , currentBoons  = newBoons }
+            MoveSpeed _        -> p { currentBoons = newBoons }
+            AttackSpeed _      -> p { currentBoons = newBoons }
+            DmgResist _        -> p { currentBoons = newBoons }
+            ExtraDash _        -> p { currentBoons = newBoons }
+            LongSword _        -> p { currentBoons = newBoons }
+            MultiShot _        -> p { currentBoons = newBoons }
+            RapidFire _        -> p { currentBoons = newBoons }
+            SniperShot _ _     -> p { currentBoons = newBoons }
+            RotatingShield _ _ -> p { currentBoons = newBoons }
+            ExplosiveShot _ _  -> p { currentBoons = newBoons }
     in world { player = updatedPlayer }
 
 applyReward (CurrencyReward amt _) world =
@@ -1378,6 +1441,7 @@ applyReward (CurrencyReward amt _) world =
 
 applyReward (BoonChoice _ _ _) world =
     world { gameState = BoonSelection }
+
 -- --- VECTOR MATH ---
 
 -- Simple circle collision check.
