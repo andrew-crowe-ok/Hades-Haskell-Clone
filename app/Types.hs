@@ -158,17 +158,17 @@ data WeaponType = Sword | Bow
 
 
 data Boon
-    = AttackDmg Int            -- General damage upgrade to both sword and projectiles   --DONE
-    | AttackSpeed Float        -- faster shooting                                       --DONE
-    | ExtraHealth Int          --  more health  (visual health reflects this.)             --DONE
-    | MoveSpeed Float                                                                   --DONE
-    | DmgResist Float           -- take less damage on hit                              --
-    | ExtraDash Int
-    | Chaser                                                                            --
-    | LongSword Int    -- +damage, longer melee range           
-    | MultiShot Int               -- number of extra projectiles per shot
-    | RapidFire Float             -- low famage, medium speed 
-    | SniperShot Int Float        -- more damage, faster projectile
+    = AttackDmg Int            -- General damage upgrade to both sword and projectiles   RED Boon
+    | AttackSpeed Float        -- faster shooting                                       ORANGE Boon
+    | ExtraHealth Int          --  more health  (visual health reflects this.)           Green Boon
+    | MoveSpeed Float                                                                   --Blue Boon
+    | DmgResist Float           -- take less damage on hit                              -- Violet
+    | ExtraDash Int                                                                     -- Cyan
+    | Chaser                                                                            -- Grey
+    | LongSword Int    -- +damage, longer melee range                                   -- Rose
+    | MultiShot Int               -- number of extra projectiles per shot               -- azure (light blue)
+    | RapidFire Float             -- low famage, medium speed                           -- magenta 
+    | SniperShot Int Float        -- more damage, faster projectile                     -- (yellow green)
 
     deriving (Show, Read, Eq)
 

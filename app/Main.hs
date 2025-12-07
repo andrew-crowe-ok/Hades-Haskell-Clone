@@ -332,8 +332,8 @@ drawEnemy e =
 boonColor :: Boon -> Color
 boonColor boon = case boon of
   AttackDmg _        -> red
-  AttackSpeed _      -> orange        -- new feature: bright orange
-  MoveSpeed _        -> blue          -- new feature: bright blue
+  AttackSpeed _      -> orange        
+  MoveSpeed _        -> blue          
   ExtraHealth _      -> green
   DmgResist _        -> violet
   ExtraDash _        -> cyan
@@ -362,11 +362,16 @@ drawSingleReward r =
 drawUI :: World -> Picture
 drawUI world =
   let p = player world
-      pStats = calculateStats p -- Get stats to show max health
+      pStats = calculateStats p
       chamber = currentChamber (currentRun world)
       healthText = "Health: " ++ show (currentHealth p) ++ " / " ++ show (statMaxHealth pStats)
       dashText = "Dashes: " ++ show (dashCount p)
-      clearedText = if isCleared chamber && not (null (rewards chamber))
+      
+      -- Check if player is near any reward
+      nearReward = any (\r -> let (rPos, rRad) = getRewardPosRad r
+                              in isColliding (playerPos p) playerRadius rPos rRad) (rewards chamber)
+      
+      clearedText = if isCleared chamber && nearReward
                     then translate (-150) 0 $ scale 0.2 0.2 $ color yellow $ text "Press [E] to collect"
                     else blank
   in pictures
@@ -502,7 +507,6 @@ gatherBoonEffects boons =
 
 
 -- --- UPDATE (Game) ---
-
 updateGame :: Float -> World -> World
 updateGame dt world =
   let
@@ -521,37 +525,39 @@ updateGame dt world =
       -- 4. Move player (apply dash & velocity)
       world3 = movePlayer dt world2
 
-      -- 5. Handle shooting (projectiles)
+      -- 5. Handle interactions
+      world6 = handleInteraction world5
+
+      -- 6. Handle shooting (projectiles)
       world4 = handleAttacks world3 pStats
 
-      -- 6. Handle melee (sword)
+      -- 7. Handle melee (sword)
       world5 = handleMelee world4 pStats
-
-      -- 7. Handle interactions
-      world6 = handleInteraction world5
 
       -- 8. Resolve collisions
       world7 = resolvePlayerEnemyCollisions pStats world6
       world7b = spawnMoreEnemies dt world7
 
-      -- 9. Update AI
+      -- 9. Update AI (fires turret projectiles)
       world8 = updateAI dt world7b
+
+      -- 10. Move enemies (skip turrets, AI already moved them)
       world9 = moveEntities dt world8
 
-      -- 10. Handle projectile collisions
+      -- 11. Handle projectile collisions
       world10 = handleCollisions world9 pStats
 
-      -- 11. Check room cleared
+      -- 12. Check room cleared
       world11 = checkRoomCleared world10
 
-      -- 12. Update projectiles
+      -- 13. Update projectiles
       world12 = updateProjectiles dt world11
 
-      -- 13. Check player death
+      -- 14. Check player death
       finalWorld = checkPlayerDeath world12
 
   in finalWorld
-
+  
 -- Calculates player velocity based on currently held keys and stats.
 updatePlayerVelocity :: World -> PlayerStats -> World
 updatePlayerVelocity world pStats =
@@ -617,7 +623,7 @@ handleAttacks world pStats =
              let offset = scaleV (i * spacing) perp
                  pos = addV (px, py) (scaleV playerRadius dir) `addV` offset
                  vel = scaleV baseProjSpeed dir
-                 seeking = Chaser `elem` currentBoons p  -- Set homing based on boons now
+                 seeking = bsChaser summary--Chaser `elem` currentBoons p  -- Set homing based on boons now
              in Projectile
                   { projPos = pos
                   , projVel = vel
@@ -657,8 +663,8 @@ handleMelee world pStats =
        let (px, py) = playerPos p
            (mx, my) = mousePos world
            (fx, fy) = normalize (subV (mx, my) (px, py))
-           swordRange = statSwordLength pStats  -- ⚠ use sword length from PlayerStats
-           swordRadius = swordRange / 2         -- ⚠ hit radius scales with sword
+           swordRange = statSwordLength pStats  -- use sword length from PlayerStats
+           swordRadius = swordRange / 2         -- hit radius scales with sword
            -- Move hit center along stab direction for stabbing motion
            stabProgress = min 1.0 ((worldTime world - lastAttack w) / 0.2) -- 0.2s stab
            hitCenter = addV (px, py) (scaleV (stabProgress * swordRange) (fx, fy))
@@ -932,6 +938,7 @@ spawnMoreEnemies dt world =
        then world { enemySpawnTimer = timer }
        else spawnEnemy world
 
+
 -- Update AI state for all enemies and handle attacks
 updateAI :: Float -> World -> World
 updateAI dt world =
@@ -942,14 +949,23 @@ updateAI dt world =
       -- Process each enemy
       (newEnemies, newWorld) = foldl (processEnemy dt p) ([], world) (enemies chamber)
 
-      newChamber = chamber { enemies = newEnemies }
-  in newWorld { currentRun = run { currentChamber = newChamber } }
+      -- Update chamber with new enemies
+      run' = currentRun newWorld
+      chamber' = (currentChamber run') { enemies = newEnemies }
+      run'' = run' { currentChamber = chamber' }
+  in newWorld { currentRun = run'' }
 
 -- Process a single enemy for AI, movement, and attacks
 processEnemy :: Float -> Player -> ([Enemy], World) -> Enemy -> ([Enemy], World)
 processEnemy dt p (accEnemies, world) e =
   let (updatedEnemy, world') = updateSingleEnemyAI dt p e world
-  in (accEnemies ++ [updatedEnemy], world')
+      -- Immediately update the chamber so fireAtPlayer sees the updated enemy
+      run' = currentRun world'
+      chamber' = currentChamber run'
+      newEnemiesInChamber = map (\en -> if enemyPos en == enemyPos updatedEnemy then updatedEnemy else en) (enemies chamber')
+      newChamber = chamber' { enemies = newEnemiesInChamber }
+      newWorld = world' { currentRun = run' { currentChamber = newChamber } }
+  in (accEnemies ++ [updatedEnemy], newWorld)
 
 -- Update a single enemy
 updateSingleEnemyAI :: Float -> Player -> Enemy -> World -> (Enemy, World)
@@ -969,11 +985,12 @@ updateSingleEnemyAI dt p e world =
           dirToPlayer = normalize $ subV (playerPos p) (enemyPos eMoved)
           eFacing = eMoved { enemyFacingDir = dirToPlayer, hitTimer = hitTimer eMoved + dt }
       in if hitTimer eFacing >= 4.0
-         then
-           let (eFired, world') = fireAtPlayer world p eFacing
-           in (eFired { hitTimer = 0 }, world')  -- fire and reset
-         else
-           (eFacing, world)
+           then
+             let (eFired, world') = fireAtPlayer world p eFacing
+                 eReset = eFired { hitTimer = 0 }  -- reset timer after firing
+             in (eReset, world')
+           else
+             (eFacing, world)
 
     -- ---------------------- Shield Charger ----------------------
     ShieldCharger ->
@@ -997,7 +1014,7 @@ moveMeleeBasic dt p e =
         newPos = (ex + dirX * eBaseSpeed e * dt, ey + dirY * eBaseSpeed e * dt)
     in e { enemyPos = newPos }
   else e
-
+  
 -- Ranged Turret moves slowly toward player
 moveRangedTurret :: Float -> Player -> Enemy -> Enemy
 moveRangedTurret dt p e =
@@ -1088,41 +1105,20 @@ moveEntities dt world =
       run = currentRun world
       chamber = currentChamber run
 
-      -- 1️⃣ Update all enemies (AI + movement + firing)
-      (updatedEnemies, worldAfterEnemyUpdates) =
-        foldl (\(accEnemies, w) e ->
-                 let (e', w') = updateSingleEnemyAI dt p e w
-                 in (accEnemies ++ [e'], w')
-              ) ([], world) (enemies chamber)
+      -- Only move enemies that don’t have AI movement (if any)
+      movedEnemies = map (\e -> case enemyType e of
+                                   RangedTurret -> e   -- already handled in updateAI
+                                   _            -> moveEnemy dt p e
+                            ) (enemies chamber)
 
-      -- 2️⃣ Move all projectiles using updated enemies and projectile flags
-      movedProjs = map (moveProjectile dt updatedEnemies p) (projectiles chamber)
+      -- Move all projectiles
+      movedProjs = map (moveProjectile dt movedEnemies p) (projectiles chamber)
 
-      -- 3️⃣ Update chamber with new enemies and moved projectiles
-      newChamber = chamber { enemies = updatedEnemies, projectiles = movedProjs }
+      newChamber = chamber { enemies = movedEnemies, projectiles = movedProjs }
 
-  in worldAfterEnemyUpdates { currentRun = run { currentChamber = newChamber } }
-
-handleTurretShoot :: Player -> ([Enemy], [Projectile]) -> Enemy -> ([Enemy], [Projectile])
-handleTurretShoot p (enemiesAcc, projsAcc) e@(Enemy { enemyType = RangedTurret, enemyPos = (ex, ey), eBaseDmg = dmg, hitTimer = ht }) =
-  if ht <= 0 then (e:enemiesAcc, projsAcc)
-  else
-    let (px, py) = playerPos p
-        (dirX, dirY) = normalize (px - ex, py - ey)
-        newProj = Projectile
-          { projPos = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
-          , projVel = (dirX * 200, dirY * 200)
-          , projDmg = dmg
-          , projSource = FromEnemy
-          , projRadius = 5
-          , projTTL = 5.0
-          }
-    in (e { hitTimer = 0 } : enemiesAcc, newProj : projsAcc)
-handleTurretShoot _ (enemiesAcc, projsAcc) e = (e : enemiesAcc, projsAcc)
-
-
+  in world { currentRun = run { currentChamber = newChamber } }
 -- Move a single enemy.
--- Move a single enemy based on type and AI state
+
 moveEnemy :: Float -> Player -> Enemy -> Enemy
 moveEnemy dt p e =
   let (px, py) = playerPos p
@@ -1148,26 +1144,30 @@ moveEnemy dt p e =
          -- Move straight toward player
          e { enemyPos = (ex + dirX * speed * dt, ey + dirY * speed * dt) }
          
+-- Fire a projectile at the player
 fireAtPlayer :: World -> Player -> Enemy -> (Enemy, World)
 fireAtPlayer world p e =
   let (ex, ey) = enemyPos e
       (px, py) = playerPos p
       (dirX, dirY) = normalize (px - ex, py - ey)
-      projectileSpeed = 900  
+      projectileSpeed = 900
       newProj = Projectile
         { projPos    = (ex + dirX * enemyRadius e, ey + dirY * enemyRadius e)
         , projVel    = (dirX * projectileSpeed, dirY * projectileSpeed)
         , projDmg    = eBaseDmg e
         , projSource = FromEnemy
         , projRadius = 5
-        , isSeeking = False
+        , isSeeking  = False
         , projTTL    = 5.0
         }
-      run = currentRun world
+      run     = currentRun world
       chamber = currentChamber run
+
+      -- Only add the projectile, do not try to update enemies here
       newChamber = chamber { projectiles = newProj : projectiles chamber }
       newRun = run { currentChamber = newChamber }
   in (e, world { currentRun = newRun })
+
 
 -- Checks if player is in front of the shield during a charge
 isFrontShielded :: Enemy -> Player -> Bool
@@ -1196,7 +1196,6 @@ hasChaserBoon :: Player -> Bool
 hasChaserBoon p = Chaser `elem` currentBoons p
 
 
--- Move a single projectile (homing if player bullet has Chaser)
 
 -- Move a single projectile
 moveProjectile :: Float -> [Enemy] -> Player -> Projectile -> Projectile
@@ -1206,18 +1205,14 @@ moveProjectile dt enemies p proj =
 
       -- Only homing for player bullets marked as seeking
       newVel = if projSource proj == FromPlayer && isSeeking proj && not (null enemies)
-               then case closestEnemy (px, py) enemies of
-                      Just e ->
-                        let (ex, ey) = enemyPos e
-                            dirToEnemy = normalize (ex - px, ey - py)
-                            speed = magnitude (vx, vy)
-                            lerpFactor = 0.15
-                            newDir = normalize
-                                     ( fst (vx, vy) * (1 - lerpFactor) + fst dirToEnemy * lerpFactor
-                                     , snd (vx, vy) * (1 - lerpFactor) + snd dirToEnemy * lerpFactor )
-                        in scaleV speed newDir
-                      Nothing -> (vx, vy)
-               else (vx, vy)
+         then case closestEnemy (px, py) enemies of
+                Just e ->
+                  let (ex, ey) = enemyPos e
+                      dirToEnemy = normalize (ex - px, ey - py)
+                      speed = magnitude (vx, vy)
+                  in scaleV speed dirToEnemy   -- direct homing toward enemy each frame
+                Nothing -> (vx, vy)
+         else (vx, vy)
 
       newPos = (px + fst newVel * dt, py + snd newVel * dt)
       newTTL = projTTL proj - dt
@@ -1290,7 +1285,6 @@ checkPlayerHit p pStats enemyProjs =
              (player, hitProjs)
 
 -- Checks a single enemy against a single projectile
--- Checks a single enemy against a single projectile
 checkHit :: StdGen -> Projectile -> ([Enemy], Bool, [Reward]) -> Enemy -> ([Enemy], Bool, [Reward], StdGen)
 checkHit gen proj (survivors, alreadyHit, rewards) enemy
   -- Projectile already hit another enemy
@@ -1321,14 +1315,14 @@ checkHit gen proj (survivors, alreadyHit, rewards) enemy
                      , Chaser 
                      , RapidFire 0 
                      ]
-          -- 10% chance to drop a boon
+          -- 60% chance to drop a boon
           (boonRoll, gen1) = randomR (0.0, 1.0 :: Float) gen
           (boonIndex, gen2) = randomR (0, length allBoons - 1) gen1
-          newBoon = if boonRoll <= 0.5 then Just (allBoons !! boonIndex) else Nothing
+          newBoon = if boonRoll <= 0.6 then Just (allBoons !! boonIndex) else Nothing
 
-          -- 30% chance for a heal reward (unchanged)
+          -- 20% chance for a heal reward 
           (healthRoll, gen3) = randomR (0.0, 1.0 :: Float) gen2
-          healthReward = if healthRoll <= 0.3 then [HealReward 15 (enemyPos enemy)] else []
+          healthReward = if healthRoll <= 0.2 then [HealReward 15 (enemyPos enemy)] else []
 
           newRewards = case newBoon of
                          Just b  -> SimpleBoon b (enemyPos enemy) : healthReward ++ rewards
@@ -1432,6 +1426,7 @@ applyReward (SimpleBoon boon _) world =
     let p        = player world
         newBoons = boon : currentBoons p
         updatedPlayer = case boon of
+            AttackDmg n        -> p { currentBoons = newBoons } -- stats applied via calculateStats
             ExtraHealth n      -> p { baseMaxHealth = baseMaxHealth p + n
                                     , currentBoons  = newBoons }
             MoveSpeed _        -> p { currentBoons = newBoons }
