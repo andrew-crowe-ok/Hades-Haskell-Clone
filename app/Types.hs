@@ -124,8 +124,8 @@ data Projectile = Projectile
     , projVel    :: (Float, Float)
     , projDmg    :: Int
     , projSource :: ProjectileSource
-    , projExplosive :: Maybe (Float, Int)  -- radius, damage
     , projRadius :: Float
+    , isSeeking  :: Bool       
     , projTTL    :: Float
     } deriving (Show, Read, Eq)
 
@@ -150,7 +150,7 @@ data BoonSummary = BoonSummary
   , bsSniperBonusDmg    :: Int
   , bsSniperProjSpeed   :: Float
   , bsSniperFirePenalty :: Float
-  , bsExplosive         :: Maybe (Float, Int) -- radius, damage
+  , bsChaser :: Bool
   }
 
 data WeaponType = Sword | Bow
@@ -163,14 +163,14 @@ data Boon
     | ExtraHealth Int          --  more health  (visual health reflects this.)             --DONE
     | MoveSpeed Float                                                                   --DONE
     | DmgResist Float           -- take less damage on hit                              --
-    | ExtraDash Int                                                                     --
-    | LongSword Int               -- +damage, longer melee range
+    | ExtraDash Int
+    | Chaser                                                                            --
+    | LongSword Int    -- +damage, longer melee range           
     | MultiShot Int               -- number of extra projectiles per shot
     | RapidFire Float             -- low famage, medium speed 
-    | ExplosiveShot Float Int
     | SniperShot Int Float        -- more damage, faster projectile
-    | RotatingShield Float Float  -- shield radius, cooldown/regen time
-    deriving (Show, Read)
+
+    deriving (Show, Read, Eq)
 
 
 data Reward
